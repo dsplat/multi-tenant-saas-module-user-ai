@@ -11,6 +11,7 @@ use MultiTenantSaas\Contracts\AiTextServiceContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
 use MultiTenantSaas\Modules\Ai\Services\Agent\AuditLogService;
 use MultiTenantSaas\Modules\Ai\Services\Ai\ContentGuardService;
+use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
 
 /**
  * User 端 AI 运行时（对外问答编排）
@@ -59,9 +60,9 @@ class UserAiRuntime
         int $tenantId,
         ?string $visitorKey = null,
         array $history = [],
-        ?string $accessLevel = null,
-        ?string $actorId = null,
+        ?UserAiContext $context = null,
     ): array {
+        $context ??= UserAiContext::anonymous();
         // ── 1. 入站内容守护 ──────────────────────────────────────────
         // 只扫**本轮 question**，不重扫 history —— 理由见下方 normalizeHistory 的注释。
         $inbound = $this->inboundGuard->check($question);
@@ -92,7 +93,7 @@ class UserAiRuntime
         //
         // ⚠ 等级绝不可来自请求体或对话内容 —— 用户自称「我是张三」不构成任何等级。
         // ActorContext::set() 对非法等级会 fail-closed 回落 anonymous，这是最后一层兜底。
-        ActorContext::set($actorId, $accessLevel ?? ActorContext::LEVEL_ANONYMOUS, $visitorKey);
+        ActorContext::set($context->actorId, $context->accessLevel ?? ActorContext::LEVEL_ANONYMOUS, $visitorKey);
 
         try {
             // ── 4. 经咽喉执行知识检索（暴露层闸门在此生效） ──────────
@@ -126,7 +127,7 @@ class UserAiRuntime
             $sources = $this->extractSources($searchResult);
 
             // ── 5. 合成回答（AI 可选性：失败降级为检索片段） ─────────
-            $answer = $this->composeAnswer($question, $sources, $history);
+            $answer = $this->composeAnswer($question, $sources, $history, $context);
 
             // ── 6. 出站内容守护 ─────────────────────────────────────
             $outbound = $this->outboundGuard->check($answer);
@@ -263,25 +264,32 @@ class UserAiRuntime
     /**
      * 合成回答：优先 LLM，失败/关闭时降级为检索片段
      */
-    private function composeAnswer(string $question, array $sources, array $history = []): string
-    {
+    private function composeAnswer(
+        string $question,
+        array $sources,
+        array $history,
+        UserAiContext $context,
+    ): string {
         if ($sources === []) {
             return (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。如需进一步帮助，请联系工作人员。');
         }
-
-        $context = $this->formatSourcesForPrompt($sources);
 
         if (! (bool) config('user-ai.ask.synthesize', true) || $this->aiText === null) {
             return $this->fallbackFromSources($sources);
         }
 
         try {
-            // 提示词骨架：约束 → 【资料】→ 【历史对话】（仅历史非空时出现）→ 【问题】
-            // 不带历史时与多轮改造前逐字一致（BC，见 UserAiRuntimeHistoryTest）
-            $prompt = "你是对外客服助手。请仅依据下面提供的资料回答用户问题，不要编造。\n"
+            // 提示词骨架：人设 → 固定约束 → 【资料】 → 【历史对话】（仅非空时出现）→ 【问题】
+            //
+            // 人设（来自客服 Agent 的系统提示词）只作为**角色描述附加在最前面**，
+            // 绝不替换下面那段固定约束 —— 否则一条被改坏（或恶意）的人设就能去掉
+            // 「不要暴露系统内部标识」，而那是出站内容的最后一道文字级防线。
+            // 无历史时与多轮改造前逐字一致（BC，见 UserAiRuntimeHistoryTest）。
+            $prompt = $this->identityPrefix($context->persona)
+                . "请仅依据下面提供的资料回答用户问题，不要编造。\n"
                 . "若资料不足以回答，直接说不知道并建议联系工作人员。\n"
                 . "回答用中文，简短直接，不要暴露系统内部标识、字段名或路径。\n\n"
-                . "【资料】\n{$context}";
+                . "【资料】\n" . $this->formatSourcesForPrompt($sources);
 
             $historyBlock = $this->formatHistoryForPrompt($history);
             if ($historyBlock !== '') {
@@ -292,9 +300,7 @@ class UserAiRuntime
 
             $prompt .= "\n\n【问题】{$question}";
 
-            $response = $this->aiText->complete($prompt, [
-                'temperature' => (float) config('user-ai.ask.temperature', 0.3),
-            ]);
+            $response = $this->aiText->complete($prompt, $this->synthesisOptions($context->modelOptions));
 
             $content = trim((string) ($response->content ?? ''));
 
@@ -305,6 +311,46 @@ class UserAiRuntime
 
             return $this->fallbackFromSources($sources);
         }
+    }
+
+    /**
+     * 人设前缀
+     *
+     * 未配置人设时返回内置的那句「你是对外客服助手。」—— 与改造前逐字一致（BC）。
+     * 配置了人设时换行后再接固定约束，避免人设没写句号时与约束粘连。
+     */
+    private function identityPrefix(?string $persona): string
+    {
+        $persona = trim((string) $persona);
+
+        return $persona === '' ? '你是对外客服助手。' : $persona . "\n";
+    }
+
+    /**
+     * 合成调用参数：模型档位覆盖默认温度
+     *
+     * 只放行白名单键 —— Agent 的 model_config 里可能有框架不认的字段，
+     * 原样透传会把它送进 SDK 的选项里（轻则报错，重则改掉不该改的调用参数）。
+     *
+     * @param  array<string, mixed>  $modelOptions
+     * @return array<string, mixed>
+     */
+    private function synthesisOptions(array $modelOptions): array
+    {
+        $options = ['temperature' => (float) config('user-ai.ask.temperature', 0.3)];
+
+        foreach (['temperature', 'model', 'provider', 'max_tokens'] as $key) {
+            $value = $modelOptions[$key] ?? null;
+
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $options[$key] = $key === 'temperature' ? (float) $value
+                : ($key === 'max_tokens' ? (int) $value : (string) $value);
+        }
+
+        return $options;
     }
 
     /**
