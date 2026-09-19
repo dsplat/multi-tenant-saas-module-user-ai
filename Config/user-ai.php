@@ -63,6 +63,21 @@ return [
         'temperature' => (float) env('USER_AI_ASK_TEMPERATURE', 0.3),
         // 检索无结果时的兜底文案
         'empty_answer' => '抱歉，知识库里暂时没有找到相关内容。如需进一步帮助，请联系工作人员。',
+
+        /*
+        | 多轮会话历史
+        |
+        | 外部主体（学生）连续追问时，调用方把前几轮对话回传进来，用于让模型
+        | 知道上下文。历史上限是**成本与提示词可控**的双重约束：历史越长，
+        | 每次追问的 token 越贵，越久的内容对当前问题也越无用。
+        |
+        | 历史被当作**不可信输入**处理：非法项一律跳过（见 UserAiRuntime::normalizeHistory）。
+        |
+        */
+        // 最多带入的历史条数（1 条 = 一轮消息；超出则从最旧的开始丢弃）
+        'max_history_turns' => (int) env('USER_AI_ASK_MAX_HISTORY_TURNS', 6),
+        // 单条历史内容的最大字符数（超出截断，防止一条长文挤掉本轮资料）
+        'max_history_chars' => (int) env('USER_AI_ASK_MAX_HISTORY_CHARS', 500),
     ],
 
     /*
