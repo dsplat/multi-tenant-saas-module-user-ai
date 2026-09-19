@@ -1,0 +1,28 @@
+{
+  "name": "dsplat/multi-tenant-saas-module-user-ai",
+  "version": "1.0.0",
+  "description": "User 端 AI 基座 —— 外部主体身份上下文、工具暴露层闸门、出站内容守护与公开问答入口",
+  "type": "library",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "MultiTenantSaas\\Modules\\UserAi\\": ""
+    }
+  },
+  "require": {
+    "php": "^8.3",
+    "dsplat/multi-tenant-saas": "*"
+  },
+  "extra": {
+    "saas": {
+      "name": "user-ai",
+      "priority": 250,
+      "dependencies": ["ai", "knowledge"],
+      "conflicts": [],
+      "requires_core": ">=1.0.0",
+      "provider": "MultiTenantSaas\\Modules\\UserAi\\UserAiServiceProvider",
+      "tenant_toggleable": true,
+      "default_enabled": true
+    }
+  }
+}
