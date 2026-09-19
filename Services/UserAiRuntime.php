@@ -54,8 +54,14 @@ class UserAiRuntime
      *                          可选项：既有调用方不传即为单轮问答；脏项由 normalizeHistory 跳过
      * @return array{allowed: bool, answer: string, sources: array, denied: ?string, category: ?string}
      */
-    public function ask(string $question, int $tenantId, ?string $visitorKey = null, array $history = []): array
-    {
+    public function ask(
+        string $question,
+        int $tenantId,
+        ?string $visitorKey = null,
+        array $history = [],
+        ?string $accessLevel = null,
+        ?string $actorId = null,
+    ): array {
         // ── 1. 入站内容守护 ──────────────────────────────────────────
         // 只扫**本轮 question**，不重扫 history —— 理由见下方 normalizeHistory 的注释。
         $inbound = $this->inboundGuard->check($question);
@@ -79,10 +85,14 @@ class UserAiRuntime
         // 在进链路前先净化：脏历史绝不允许把整条对外问答炸断。
         $history = $this->normalizeHistory($history);
 
-        // ── 3. 设置外部主体上下文（匿名） ────────────────────────────
-        // 等级只能由服务端判定：本切片为匿名 FAQ，一律 anonymous。
-        // 后续已登录链路在此改为 authenticated / verified。
-        ActorContext::setAnonymous($visitorKey);
+        // ── 3. 设置外部主体上下文 ────────────────────────────────────
+        // 等级**由调用方（服务端）判定后传入**，本层不自行推断：
+        // 智能客服会按会话身份（是否已关联用户/是否已核身）传 authenticated / verified，
+        // 公开 FAQ 端点不传则为 anonymous。
+        //
+        // ⚠ 等级绝不可来自请求体或对话内容 —— 用户自称「我是张三」不构成任何等级。
+        // ActorContext::set() 对非法等级会 fail-closed 回落 anonymous，这是最后一层兜底。
+        ActorContext::set($actorId, $accessLevel ?? ActorContext::LEVEL_ANONYMOUS, $visitorKey);
 
         try {
             // ── 4. 经咽喉执行知识检索（暴露层闸门在此生效） ──────────
