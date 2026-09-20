@@ -95,6 +95,11 @@ class UserAiRuntime
         // ActorContext::set() 对非法等级会 fail-closed 回落 anonymous，这是最后一层兜底。
         ActorContext::set($context->actorId, $context->accessLevel ?? ActorContext::LEVEL_ANONYMOUS, $visitorKey);
 
+        // 工具范围（可选）——只收窄，不放宽；见 ActorContext::setToolScope 的说明
+        if ($context->toolScope !== null) {
+            ActorContext::setToolScope($context->toolScope);
+        }
+
         try {
             // ── 4. 经咽喉执行知识检索（暴露层闸门在此生效） ──────────
             // 必须走 ToolRegistry::execute()，不得直接调 ExternalKbService ——

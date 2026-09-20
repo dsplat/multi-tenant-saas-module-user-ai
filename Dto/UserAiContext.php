@@ -24,12 +24,15 @@ final class UserAiContext
      * @param  string|null  $persona  人设/角色描述（来自客服 Agent 的系统提示词）。
      *                                属**附加**内容，不得替换掉固定的安全约束
      * @param  array<string, mixed>  $modelOptions  模型档位（model / provider / temperature / max_tokens）
+     * @param  array<int, string>|null  $toolScope  该主体可用的工具**子集**（null = 不额外限制）。
+     *                                              只能收窄，放行不了暴露面白名单之外的工具
      */
     public function __construct(
         public readonly ?string $accessLevel = null,
         public readonly ?string $actorId = null,
         public readonly ?string $persona = null,
         public readonly array $modelOptions = [],
+        public readonly ?array $toolScope = null,
     ) {}
 
     public static function anonymous(): self
