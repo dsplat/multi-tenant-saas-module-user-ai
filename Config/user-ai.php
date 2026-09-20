@@ -25,6 +25,9 @@ return [
     | 默认只开放知识检索——匿名可问通用政策类问题。
     | 个人信息类工具（课表/成绩/缴费）必须等身份提升（verified）后才登记。
     |
+    | 刻意不登记：conversation_tag（AI 会话打标）—— 外部主体不该改会话的
+    | 质检标签；该工具供内部 Agent / 系统任务经 ToolRegistry 调用。
+    |
     */
     'tool_surface' => [
         'allowed' => [
