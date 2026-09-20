@@ -129,7 +129,7 @@ class UserAiRuntime
                 ];
             }
 
-            $sources = $this->extractSources($searchResult);
+            $sources = $this->guardSources($this->extractSources($searchResult));
 
             // ── 5. 合成回答（AI 可选性：失败降级为检索片段） ─────────
             $answer = $this->composeAnswer($question, $sources, $history, $context);
@@ -171,6 +171,41 @@ class UserAiRuntime
             // 请求级上下文用完即清，避免污染后续请求（queue/CLI 伪实例场景）
             ActorContext::clear();
         }
+    }
+
+    /**
+     * 出站守护也要扫**知识片段**
+     *
+     * 只扫最终 answer 是不够的：
+     * 1. 合成失败时答案就是片段拼接 —— 那条路径间接过了 answer 的检查，
+     *    但合成成功时 answer 可能改写/概括了片段，而 sources 原样返回给调用方
+     * 2. 公开端点 `/user-ai/ask` 会把 sources 直接返回给外部用户（UserAiController）
+     *    —— 知识库里若有内部路径/标识，就从这条旁路泄出去了
+     *
+     * 处理：逐条过出站守护，命中的片段直接丢弃（不返回、也不进合成）。
+     * 全部丢光时 composeAnswer 收到空列表 → 返回兜底文案，行为一致。
+     */
+    private function guardSources(array $sources): array
+    {
+        $kept = [];
+
+        foreach ($sources as $item) {
+            $content = is_array($item)
+                ? trim((string) ($item['content'] ?? $item['text'] ?? $item['title'] ?? ''))
+                : trim((string) $item);
+
+            if ($content === '') {
+                continue;
+            }
+
+            if (! $this->outboundGuard->check($content)['allowed']) {
+                continue;
+            }
+
+            $kept[] = $item;
+        }
+
+        return $kept;
     }
 
     /**
