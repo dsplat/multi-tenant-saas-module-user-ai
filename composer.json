@@ -10,7 +10,7 @@
   },
   "require": {
     "php": "^8.3",
-    "dsplat/multi-tenant-saas": ">=1.0.0"
+    "dsplat/multi-tenant-saas": "^1.0"
   },
   "extra": {
     "saas": {
