@@ -1,6 +1,5 @@
 {
   "name": "dsplat/multi-tenant-saas-module-user-ai",
-  "version": "1.0.0",
   "description": "User 端 AI 基座 —— 外部主体身份上下文、工具暴露层闸门、出站内容守护与公开问答入口",
   "type": "library",
   "license": "MIT",
