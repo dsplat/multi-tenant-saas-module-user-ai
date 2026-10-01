@@ -92,4 +92,28 @@ return [
         'per_minute' => (int) env('USER_AI_THROTTLE_PER_MINUTE', 20),
     ],
 
+    /*
+    | 流式模型配置（BL-030e 外部真·流式）
+    |
+    | C 端流式链路独立取模型档位，不复用 operator secretary 配置，避免耦合
+    | 运营者账单口径。base_url / api_key 由 provider 名从 config('ai.providers.*')
+    | 解析（见 UserAiStreamResolveController）。
+    |
+    */
+    'model' => [
+        'provider' => env('USER_AI_STREAM_PROVIDER', 'bailian'),
+        'model' => env('USER_AI_STREAM_MODEL', 'qwen3.7-flash'),
+        'temperature' => (float) env('USER_AI_STREAM_TEMPERATURE', 0.3),
+        'max_tokens' => (int) env('USER_AI_STREAM_MAX_TOKENS', 2000),
+    ],
+
+    /*
+    | 流式行为
+    |
+    */
+    'stream' => [
+        // 单轮流内工具调用上限（C 端只放 knowledge_search，取小值防循环烧钱）
+        'max_tool_calls' => (int) env('USER_AI_STREAM_MAX_TOOL_CALLS', 2),
+    ],
+
 ];

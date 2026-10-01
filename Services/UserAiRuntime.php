@@ -413,6 +413,28 @@ class UserAiRuntime
     }
 
     /**
+     * 流式对外的系统提示词（Node SSE 引擎经 user-resolve 下发给 LLM）
+     *
+     * 与同步 {@see composeAnswer} 的差别只在**资料获取方式**：
+     * 同步链路是 PHP 先跑 knowledge_search、把片段塞进提示词；流式链路把
+     * knowledge_search 作为 Function Calling 工具交给模型自行调用，故这里
+     * 不再内联【资料】，而是指示模型「先检索、再仅依据检索结果作答」。
+     *
+     * 安全约束逐字沿用同步链路那几句（不编造 / 中文简短 / 不暴露内部标识 /
+     * 资料无关时礼貌追问 / 确需人工提示「转人工」）—— 集中在此单点，绝不让
+     * 流式与对外护栏出现两份会漂移的副本。
+     */
+    public function streamSystemPrompt(?string $persona = null): string
+    {
+        return $this->identityPrefix($persona)
+            . "回答前请先调用 knowledge_search 工具检索知识库，拿到资料后再作答。\n"
+            . "只依据 knowledge_search 返回的资料回答，不要编造。\n"
+            . "若资料与问题无关或不足以支撑回答，不要生硬拒答：先礼貌回应用户，再追问帮他澄清真实诉求（例如卡在哪个环节、想达成什么）；确需人工时可提示回复「转人工」。绝不编造具体业务事实。\n"
+            . "若无需检索即可回应的问候或澄清，可直接友好回应，不必强行调用工具。\n"
+            . '回答用中文，简短直接，不要暴露系统内部标识、字段名或路径。';
+    }
+
+    /**
      * 合成调用参数：模型档位覆盖默认温度
      *
      * 只放行白名单键 —— Agent 的 model_config 里可能有框架不认的字段，

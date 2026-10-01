@@ -2,7 +2,11 @@
 
 use Illuminate\Support\Facades\Route;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiController;
+use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamResolveController;
+use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamToolController;
+use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamUsageController;
 use MultiTenantSaas\Modules\UserAi\Http\Middleware\EnsureExternalActor;
+use MultiTenantSaas\Modules\UserAi\Http\Middleware\EnsureExternalStreamActor;
 
 /*
 |--------------------------------------------------------------------------
@@ -29,3 +33,31 @@ use MultiTenantSaas\Modules\UserAi\Http\Middleware\EnsureExternalActor;
 
 Route::post('/user-ai/ask', [UserAiController::class, 'ask'])
     ->middleware(['throttle:user-ai', EnsureExternalActor::class]);
+
+/*
+|--------------------------------------------------------------------------
+| User AI 流式契约（Node SSE 引擎回调）
+|--------------------------------------------------------------------------
+|
+| BL-030e「外部真·流式」：H5 C 端浏览器打 Node `/ai-stream/chat`（scope=user），
+| Node 再回调以下三个端点完成鉴权/护栏/记账——拓扑与 operator 流式一致，但 PHP
+| 侧走 UserAi 而非 operator AiStreaming：
+|
+|   为什么不放 AiStreaming/Routes/api.php：那组继承 auth:sanctum（见基类
+|   ModuleServiceProvider），匿名 C 端根本进不去；公开契约端点必须落本模块
+|   public.php（仅 `api` 中间件）。
+|
+| 三个端点均挂 EnsureExternalStreamActor：按 X-Tenant-ID 解析租户 + user-ai
+|   模块门控 + 设置 ActorContext（暴露层闸门前提）+ 结束清理。
+| 限流走 throttle:user-ai-stream：Node→PHP 是 127.0.0.1 回环，$request->ip()
+|   恒为回环地址，故按 Node 透传的 X-Client-IP 计数（见 UserAiServiceProvider）。
+|
+*/
+Route::post('/user-ai/stream/resolve', UserAiStreamResolveController::class)
+    ->middleware(['throttle:user-ai-stream', EnsureExternalStreamActor::class]);
+
+Route::post('/user-ai/stream/tools', UserAiStreamToolController::class)
+    ->middleware(['throttle:user-ai-stream', EnsureExternalStreamActor::class]);
+
+Route::post('/user-ai/stream/usage', UserAiStreamUsageController::class)
+    ->middleware(['throttle:user-ai-stream', EnsureExternalStreamActor::class]);

@@ -76,5 +76,16 @@ class UserAiServiceProvider extends ModuleServiceProvider
             return Limit::perMinute((int) config('user-ai.throttle.per_minute', 20))
                 ->by($request->ip());
         });
+
+        // 流式契约限流器：Node→PHP 走 127.0.0.1 回环，$request->ip() 恒为回环地址，
+        // 若照此计数会把所有 C 端访客挤进同一桶（要么集体 429、要么限流失效）。
+        // 故按 Node 从 x-forwarded-for 提取并透传的真实客户端 IP（X-Client-IP）分桶；
+        // 头缺失时回落 $request->ip()（直连 PHP 的非回环场景仍可用）。
+        RateLimiter::for('user-ai-stream', function (Request $request) {
+            $clientIp = $request->header('X-Client-IP') ?: $request->ip();
+
+            return Limit::perMinute((int) config('user-ai.throttle.per_minute', 20))
+                ->by((string) $clientIp);
+        });
     }
 }
