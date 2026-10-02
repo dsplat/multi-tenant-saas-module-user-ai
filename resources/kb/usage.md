@@ -2,7 +2,7 @@
 title: User AI（对外 AI 基座）
 audience: operator
 locale: zh
-version: 1.0
+version: 1.1
 ---
 
 # User AI 模块
@@ -32,7 +32,7 @@ Body: { "tenant_slug": "your-school", "question": "开学时间是什么时候�
 ## 前置条件
 
 1. **知识库已配置**：在「知识库」中接入外部 KB（RAGFlow / Dify / FastGpt / 百炼），并上传校园 FAQ 内容。检索不到内容时接口会返回兜底文案。
-2. **模块已启用**：本模块默认关闭，需在模块管理中为租户开启。
+2. **模块已启用**：模块必须保持 `module_loadable=true` 才会注册路由；租户是否开放由 `default_tenant_enabled`、租户开关和 UserAi 工具白名单共同决定。
 3. **AI 模型可用**（可选）：未配置时系统直接返回检索片段，不做 LLM 摘要合成。
 
 ## 安全边界
