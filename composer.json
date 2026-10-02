@@ -16,12 +16,16 @@
     "saas": {
       "name": "user-ai",
       "priority": 250,
-      "dependencies": ["ai", "knowledge"],
+      "dependencies": [
+        "ai",
+        "knowledge"
+      ],
       "conflicts": [],
       "requires_core": ">=1.0.0",
       "provider": "MultiTenantSaas\\Modules\\UserAi\\UserAiServiceProvider",
       "tenant_toggleable": true,
-      "default_enabled": true
+      "module_loadable": true,
+      "default_tenant_enabled": true
     }
   }
 }
