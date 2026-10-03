@@ -22,8 +22,13 @@ class EnsureExternalActor
 {
     public function __construct(
         private readonly ModuleManager $moduleManager,
-        private readonly ExternalTenantAccess $access,
+        private readonly ?ExternalTenantAccess $access = null,
     ) {}
+
+    private function accessOrResolve(): ExternalTenantAccess
+    {
+        return $this->access ?? app(ExternalTenantAccess::class);
+    }
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -66,7 +71,7 @@ class EnsureExternalActor
 
         try {
             // Authenticate and authorize before tools, model credentials or quota operations.
-            $this->access->authorize($request, $tenantId);
+            $this->accessOrResolve()->authorize($request, $tenantId);
 
             return $next($request);
         } finally {
