@@ -10,27 +10,20 @@ use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Modules\Infrastructure\Models\Tenant;
 use MultiTenantSaas\Modules\Infrastructure\Services\ModuleManager;
+use MultiTenantSaas\Modules\UserAi\Services\ExternalTenantAccess;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * 外部主体流式入口闸（User 端 AI 流式契约的唯一公开入口）
- *
- * 与同步入口闸 {@see EnsureExternalActor} 同职责四件事（解析租户 / 租户级模块
- * 门控 / 设置 ActorContext / 结束清理），差异只有一处：**租户来源**。
- *
- * 为什么来源不同：
- *   同步 ask 由浏览器直接打 PHP，请求体自带 tenant_slug；而流式链路的浏览器
- *   打的是 Node 引擎（/ai-stream/chat），Node 再回调 PHP 契约端点。租户标识
- *   由浏览器经 X-Tenant-ID 头送到 Node，Node 透传回 PHP——请求体里没有 slug，
- *   只有头。故本闸按 X-Tenant-ID 解析租户。
- *
- * ⚠ 与 EnsureExternalActor 一样：本闸必须设置在 ActorContext，否则
- *   ToolRegistry 暴露层闸门会静默跳过（fail-open），外部主体就能触达
- *   operator 专属工具。新增任何流式公开路由都必须带本中间件。
+ * User AI 入口：解析租户、模块门控、认证及有效成员归属校验、请求结束清理。
+ * 客户端租户标识只负责定位，授权统一交给 ExternalTenantAccess。
+ * 无匿名降级：知识库尚无逐连接公开范围，默认不得匿名读取。
  */
 class EnsureExternalStreamActor
 {
-    public function __construct(private readonly ModuleManager $moduleManager) {}
+    public function __construct(
+        private readonly ModuleManager $moduleManager,
+        private readonly ExternalTenantAccess $access,
+    ) {}
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -71,16 +64,10 @@ class EnsureExternalStreamActor
             ], 403);
         }
 
-        // ③ 外部主体上下文：默认匿名；已登录链路在此之后覆盖为更高等级
-        if (! ActorContext::hasExplicitActor()) {
-            $visitorKey = $request->input('visitor_key');
-
-            ActorContext::setAnonymous(
-                is_string($visitorKey) && $visitorKey !== '' ? $visitorKey : null
-            );
-        }
-
         try {
+            // Authenticate and authorize before tools, model credentials or quota operations.
+            $this->access->authorize($request, $tenantId);
+
             return $next($request);
         } finally {
             // ④ 请求结束即清，避免污染同进程后续请求（Octane / queue 伪实例场景）

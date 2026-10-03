@@ -10,30 +10,20 @@ use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Modules\Infrastructure\Models\Tenant;
 use MultiTenantSaas\Modules\Infrastructure\Services\ModuleManager;
+use MultiTenantSaas\Modules\UserAi\Services\ExternalTenantAccess;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * 外部主体入口闸（User 端 AI 的唯一公开入口）
- *
- * 本中间件是**外部请求的单一声明点**，职责四件事：
- *   ① 解析租户（公开路由无 tenant.identify，须显式按 tenant_slug 解析）
- *   ② 租户级模块门控（本模块 tenant_toggleable=true）
- *   ③ **确保 ActorContext 已设置**（默认 anonymous）—— 暴露层闸门的前提
- *   ④ 请求结束清理上下文（finally）
- *
- * 为什么 ③ 必须在这里而不是让各调用方自己设：
- *   ToolRegistry 的暴露层闸门按 `ActorContext::hasExplicitActor()` 判定。
- *   若外部路径忘了设置 ActorContext，闸门会**静默跳过**（fail-open）——
- *   与「执法点依赖调用方自觉」是同一类问题。
- *   把设置点收敛到本中间件后，「外部请求未声明主体」在结构上不可能发生；
- *   配套的接线测试（UserAiWiringTest）会拦截任何忘记挂本中间件的新公开路由。
- *
- * 未来扩展：已登录链路（authenticated / verified）在 ③ 之前按渠道身份
- * 解析并调用 ActorContext::set() 覆盖默认的 anonymous 即可，闸门逻辑无需改动。
+ * User AI 入口：解析租户、模块门控、认证及有效成员归属校验、请求结束清理。
+ * 客户端租户标识只负责定位，授权统一交给 ExternalTenantAccess。
+ * 无匿名降级：知识库尚无逐连接公开范围，默认不得匿名读取。
  */
 class EnsureExternalActor
 {
-    public function __construct(private readonly ModuleManager $moduleManager) {}
+    public function __construct(
+        private readonly ModuleManager $moduleManager,
+        private readonly ExternalTenantAccess $access,
+    ) {}
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -74,16 +64,10 @@ class EnsureExternalActor
             ], 403);
         }
 
-        // ③ 外部主体上下文：默认匿名；已登录链路在此之后覆盖为更高等级
-        if (! ActorContext::hasExplicitActor()) {
-            $visitorKey = $request->input('visitor_key');
-
-            ActorContext::setAnonymous(
-                is_string($visitorKey) && $visitorKey !== '' ? $visitorKey : null
-            );
-        }
-
         try {
+            // Authenticate and authorize before tools, model credentials or quota operations.
+            $this->access->authorize($request, $tenantId);
+
             return $next($request);
         } finally {
             // ④ 请求结束即清，避免污染同进程后续请求（Octane / queue 伪实例场景）

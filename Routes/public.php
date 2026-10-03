@@ -13,7 +13,7 @@ use MultiTenantSaas\Modules\UserAi\Http\Middleware\EnsureExternalStreamActor;
 | User AI Public Routes
 |--------------------------------------------------------------------------
 |
-| 公开路由（无需认证），供外部主体（学生 / 家长 / 访客）提问。
+| 公开路由（入口闸内强制认证和有效租户成员校验），供外部主体（学生 / 家长 / 访客）提问。
 |
 | 基类 ModuleServiceProvider::loadModuleRoutes() 对 public.php 的处理：
 |   前缀 api/v1，仅挂 `api` 中间件（无 auth / 无 tenant.identify）。
@@ -44,7 +44,7 @@ Route::post('/user-ai/ask', [UserAiController::class, 'ask'])
 | 侧走 UserAi 而非 operator AiStreaming：
 |
 |   为什么不放 AiStreaming/Routes/api.php：那组继承 auth:sanctum（见基类
-|   ModuleServiceProvider），匿名 C 端根本进不去；公开契约端点必须落本模块
+|   ModuleServiceProvider），C 端身份和成员归属在 ExternalTenantAccess 统一校验；公开契约端点必须落本模块
 |   public.php（仅 `api` 中间件）。
 |
 | 三个端点均挂 EnsureExternalStreamActor：按 X-Tenant-ID 解析租户 + user-ai

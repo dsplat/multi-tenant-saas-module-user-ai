@@ -7,7 +7,9 @@ namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
 
 /**
@@ -42,6 +44,7 @@ class UserAiController extends Controller
             $validated['question'],
             $tenantId,
             $validated['visitor_key'] ?? null,
+            context: new UserAiContext(accessLevel: ActorContext::getLevel(), actorId: ActorContext::getId()),
         );
 
         return response()->json([
