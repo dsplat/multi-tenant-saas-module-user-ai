@@ -32,6 +32,7 @@ class UserAiStreamUsageController extends Controller
             'model' => ['required', 'string', 'max:100'],
             'input_tokens' => ['required', 'integer', 'min:0'],
             'output_tokens' => ['required', 'integer', 'min:0'],
+            'request_id' => ['sometimes', 'string', 'max:32'],
             'metadata' => ['sometimes', 'array'],
         ]);
 
@@ -43,6 +44,7 @@ class UserAiStreamUsageController extends Controller
 
         $metadata = (array) ($data['metadata'] ?? []);
         $metadata['source'] = 'user-ai-stream';
+        $metadata['request_id'] = $data['request_id'] ?? null;
 
         $quota = $this->usageService->recordTextUsage(
             $data['model'],
@@ -56,7 +58,7 @@ class UserAiStreamUsageController extends Controller
             'data' => [
                 'recorded' => true,
                 'tokens_used' => (int) $data['input_tokens'] + (int) $data['output_tokens'],
-                'quota_used' => $quota->tokens_used ?? null,
+                'quota_used' => (int) $quota->used_tokens,
             ],
         ]);
     }
