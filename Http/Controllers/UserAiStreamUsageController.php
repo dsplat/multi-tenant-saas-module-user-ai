@@ -8,7 +8,11 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Contracts\ExecutionAuditContract;
+use MultiTenantSaas\Contracts\UsageSettlementContract;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
+use MultiTenantSaas\Modules\Ai\Support\ExecutionAuditEvent;
+use MultiTenantSaas\Modules\Ai\Support\ExecutionStatus;
 
 /**
  * User 端 AI 流式用量结算（Node SSE 引擎回调）
@@ -20,7 +24,11 @@ use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
  */
 class UserAiStreamUsageController extends Controller
 {
-    public function __construct(private readonly AiUsageService $usageService) {}
+    public function __construct(
+        private readonly AiUsageService $usageService,
+        private readonly UsageSettlementContract $settlement,
+        private readonly ExecutionAuditContract $audit,
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -46,12 +54,38 @@ class UserAiStreamUsageController extends Controller
         $metadata['source'] = 'user-ai-stream';
         $metadata['request_id'] = $data['request_id'] ?? null;
 
-        $quota = $this->usageService->recordTextUsage(
-            $data['model'],
-            (int) $data['input_tokens'],
-            (int) $data['output_tokens'],
-            $metadata,
-        );
+        $status = 'settled';
+        if (! empty($data['request_id'])) {
+            $status = $this->settlement->settle(
+                (string) $data['request_id'],
+                'user-ai-stream',
+                $tenantId,
+                null,
+                (int) $data['input_tokens'],
+                (int) $data['output_tokens'],
+            );
+            if ($status === 'settlement_conflict') {
+                abort(409, '请求结算内容冲突');
+            }
+        }
+
+        $quota = $status === 'already_settled'
+            ? $this->usageService->getOrCreateCurrentQuota()
+            : $this->usageService->recordTextUsage(
+                $data['model'],
+                (int) $data['input_tokens'],
+                (int) $data['output_tokens'],
+                $metadata,
+            );
+
+        if (! empty($data['request_id'])) {
+            $this->audit->record(new ExecutionAuditEvent(
+                requestId: (string) $data['request_id'], scope: 'user', tenantId: $tenantId, actorId: null,
+                tool: null, status: ExecutionStatus::SUCCESS, reasonCode: null,
+                usage: ['input_tokens' => (int) $data['input_tokens'], 'output_tokens' => (int) $data['output_tokens']],
+                provenance: ['source' => 'user-ai-stream', 'settlement' => $status],
+            ));
+        }
 
         return response()->json([
             'success' => true,
