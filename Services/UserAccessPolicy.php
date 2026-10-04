@@ -27,6 +27,9 @@ final class UserAccessPolicy implements UserAccessPolicyContract
         if (! $context->active) {
             return $decision(false, 'identity_inactive');
         }
+        if ($policy->minimumLevel !== null && $this->levelRank($context->level) < $this->levelRank($policy->minimumLevel)) {
+            return $decision(false, 'level_insufficient');
+        }
         if ($policy->ownerUserId !== null && $policy->ownerUserId !== $context->userId) {
             return $decision(false, 'owner_mismatch');
         }
@@ -38,5 +41,10 @@ final class UserAccessPolicy implements UserAccessPolicyContract
         }
 
         return $decision(true, 'allowed');
+    }
+
+    private function levelRank(string $level): int
+    {
+        return array_search($level, ['anonymous', 'authenticated', 'verified', 'standard'], true) ?: 0;
     }
 }
