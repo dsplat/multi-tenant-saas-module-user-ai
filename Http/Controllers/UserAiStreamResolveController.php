@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Contracts\IdGeneratorContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ResolveController;
@@ -39,6 +40,7 @@ class UserAiStreamResolveController extends Controller
         private readonly ToolRegistryContract $toolRegistry,
         private readonly AiUsageService $usageService,
         private readonly UserAiRuntime $runtime,
+        private readonly IdGeneratorContract $idGenerator,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -85,6 +87,7 @@ class UserAiStreamResolveController extends Controller
         );
 
         $payload = [
+            'request_id' => (string) $this->idGenerator->generate(),
             'tenant_id' => $tenantId,
             // C 端无 operator Agent 概念，agent_id 置 0 仅为对齐 Node payload shape
             'agent_id' => 0,
