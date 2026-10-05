@@ -13,5 +13,6 @@ final readonly class UserResourcePolicy
         public ?string $minimumLevel = null,
         public int $creditsRequired = 0,
         public string $policyVersion = '1',
+        public ?string $requiredScoreVersion = null,
     ) {}
 }

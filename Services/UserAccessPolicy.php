@@ -27,14 +27,17 @@ final class UserAccessPolicy implements UserAccessPolicyContract
         if (! $context->active) {
             return $decision(false, 'identity_inactive');
         }
-        if ($policy->minimumLevel !== null && $this->levelRank($context->level) < $this->levelRank($policy->minimumLevel)) {
-            return $decision(false, 'level_insufficient');
-        }
         if ($policy->ownerUserId !== null && $policy->ownerUserId !== $context->userId) {
             return $decision(false, 'owner_mismatch');
         }
-        if ($policy->requiredRight !== null && ! in_array($policy->requiredRight, $context->rights, true)) {
+        if ($policy->requiredRight !== null && ($policy->requiredRight === '' || ! in_array($policy->requiredRight, $context->rights, true))) {
             return $decision(false, 'right_missing');
+        }
+        if ($policy->minimumLevel !== null && ($this->levelRank($context->level) < 0 || $this->levelRank($policy->minimumLevel) < 0 || $this->levelRank($context->level) < $this->levelRank($policy->minimumLevel))) {
+            return $decision(false, 'level_insufficient');
+        }
+        if ($policy->requiredScoreVersion !== null && $context->scoreVersion !== $policy->requiredScoreVersion) {
+            return $decision(false, 'score_insufficient');
         }
         if ($policy->creditsRequired > $context->credits) {
             return $decision(false, 'credits_insufficient');
@@ -45,6 +48,8 @@ final class UserAccessPolicy implements UserAccessPolicyContract
 
     private function levelRank(string $level): int
     {
-        return array_search($level, ['anonymous', 'authenticated', 'verified', 'standard'], true) ?: 0;
+        $rank = array_search($level, ['anonymous', 'authenticated', 'verified'], true);
+
+        return $rank === false ? -1 : $rank;
     }
 }

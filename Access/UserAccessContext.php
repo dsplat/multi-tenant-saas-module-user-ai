@@ -10,7 +10,7 @@ final readonly class UserAccessContext
         public int $tenantId,
         public ?int $userId,
         public bool $active = true,
-        public string $level = 'standard',
+        public string $level = 'authenticated',
         public ?string $scoreVersion = null,
         public int $credits = 0,
         public array $rights = [],

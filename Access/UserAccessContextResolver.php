@@ -6,6 +6,7 @@ namespace MultiTenantSaas\Modules\UserAi\Access;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use MultiTenantSaas\Context\ActorContext;
 
 /**
  * 从服务端身份与租户成员关系派生 UserAccessContext。
@@ -18,8 +19,12 @@ final class UserAccessContextResolver
     {
         $active = true;
         $credits = 0;
+        $level = ActorContext::LEVEL_AUTHENTICATED;
 
-        $userExists = ! Schema::hasTable('users') || DB::table('users')->where('user_id', $userId)->exists();
+        $user = null;
+        $userExists = ! Schema::hasTable('users') || ($user = DB::table('users')
+            ->where('user_id', $userId)
+            ->first(['is_active', 'email_verified_at', 'phone_verified_at'])) !== null;
         $tenantActive = ! Schema::hasTable('tenants') || DB::table('tenants')
             ->where('tenant_id', $tenantId)
             ->where('status', 'active')
@@ -36,18 +41,29 @@ final class UserAccessContextResolver
         }
 
         if (Schema::hasTable('users') && $userExists) {
-            $active = $active && $tenantActive && (bool) DB::table('users')
-                ->where('user_id', $userId)
-                ->where('is_active', true)
-                ->exists();
+            $active = $active && $tenantActive && (bool) $user->is_active;
+            if ($user->email_verified_at !== null || $user->phone_verified_at !== null) {
+                $level = ActorContext::LEVEL_VERIFIED;
+            }
         }
+
+        // ActorContext 是请求级服务端事实；只接受同一主体，绝不从请求参数读取等级。
+        if (ActorContext::getId() === (string) $userId && in_array(ActorContext::getLevel(), ActorContext::LEVELS, true)) {
+            $level = (string) ActorContext::getLevel();
+        }
+
+        $rights = array_values(array_unique(array_filter(
+            array_map('strval', $rights),
+            static fn (string $right): bool => $right !== ''
+        )));
 
         return new UserAccessContext(
             tenantId: $tenantId,
             userId: $userId,
             active: $active,
-            credits: $credits,
-            rights: array_values(array_unique(array_map('strval', $rights))),
+            level: $level,
+            credits: max(0, $credits),
+            rights: $rights,
         );
     }
 }
