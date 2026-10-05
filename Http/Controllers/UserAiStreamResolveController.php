@@ -30,7 +30,8 @@ use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
  *   secretary 配置解耦，避免耦合运营者账单口径。
  * - 成本：预算前置检查走 {@see AiUsageService}（按 TenantContext 记租户用量），
  *   与 operator 流式结算口径一致——流式 LLM 由 Node 直连、PHP 不经 AiGatewayService，
- *   故复用 AiUsageService 而非同步链路的网关扣费。
+ *   故复用 AiUsageService 而非同步链路的网关扣费。此外叠加**主体级配额**前置
+ *   （checkActorQuota，按 ActorContext 的主体），与租户总闸取严。
  *
  * 租户解析 / 模块门控 / ActorContext 设置全由 `EnsureExternalStreamActor` 中间件承担。
  */
@@ -55,6 +56,8 @@ class UserAiStreamResolveController extends Controller
         try {
             $this->usageService->checkQuota('text');
             $this->usageService->checkBudget();
+            // 主体级配额（User 端）：与租户总闸并存、取严 —— 单主体不得刷爆租户额度
+            $this->usageService->checkActorQuota('text');
         } catch (\RuntimeException $e) {
             return response()->json([
                 'success' => false,

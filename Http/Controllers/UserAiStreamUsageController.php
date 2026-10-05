@@ -21,6 +21,10 @@ use MultiTenantSaas\Modules\Ai\Support\ExecutionStatus;
  * used_tokens（TenantContext 由 `EnsureExternalStreamActor` 从 X-Tenant-ID 写入），
  * 差别是 C 端**无 Agent 归属**：不校验 agent_id、不写 operator 的 ai_requests 归属，
  * metadata.source 标记 'user-ai-stream' 以便与运营者流式账单区分口径。
+ *
+ * 此外叠加**主体级配额**结算：同一笔在租户级记账之外，按 ActorContext 的主体
+ * （`EnsureExternalStreamActor` 由外部鉴权写入的 User）累加主体用量，供 resolve
+ * 前置闸判超额。结算幂等由 settlement 统一兜底 —— already_settled 时两级都不重复计。
  */
 class UserAiStreamUsageController extends Controller
 {
@@ -77,6 +81,17 @@ class UserAiStreamUsageController extends Controller
                 (int) $data['output_tokens'],
                 $metadata,
             );
+
+        // 主体级配额结算：与租户级记账同源、同幂等语义 —— 仅在本次真正结算
+        // （非 already_settled）时累加，重复回调不重复计主体用量。
+        if ($status !== 'already_settled') {
+            $this->usageService->recordActorTextUsage(
+                $data['model'],
+                (int) $data['input_tokens'],
+                (int) $data['output_tokens'],
+                $metadata,
+            );
+        }
 
         if (! empty($data['request_id'])) {
             $this->audit->record(new ExecutionAuditEvent(
