@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
-use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
 
@@ -18,7 +18,7 @@ use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
  * 边界职责（租户解析 / 模块门控 / 主体上下文）全部由 `EnsureExternalActor`
  * 中间件承担，控制器只做参数校验与呈现——见 Routes/public.php。
  */
-class UserAiController extends Controller
+class UserAiController extends BaseController
 {
     public function __construct(private readonly UserAiRuntime $runtime) {}
 

@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
-use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
+use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ToolExecuteController;
 
 /**
@@ -26,7 +26,7 @@ use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ToolExecuteController;
  * operator 侧的 L2 确认门 / 选项卡互斥门等均为**写操作与运营会话**而生，
  * knowledge_search 只读、C 端 v1 无会话，天然不触发，故此处走最简 execute 直返。
  */
-class UserAiStreamToolController extends Controller
+class UserAiStreamToolController extends BaseController
 {
     public function __construct(private readonly ToolRegistryContract $toolRegistry) {}
 

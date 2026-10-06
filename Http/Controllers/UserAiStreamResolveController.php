@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
-use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\IdGeneratorContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
+use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ResolveController;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
@@ -35,7 +35,7 @@ use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
  *
  * 租户解析 / 模块门控 / ActorContext 设置全由 `EnsureExternalStreamActor` 中间件承担。
  */
-class UserAiStreamResolveController extends Controller
+class UserAiStreamResolveController extends BaseController
 {
     public function __construct(
         private readonly ToolRegistryContract $toolRegistry,

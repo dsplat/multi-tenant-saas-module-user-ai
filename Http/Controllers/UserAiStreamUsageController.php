@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
-use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\ExecutionAuditContract;
 use MultiTenantSaas\Contracts\UsageSettlementContract;
+use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\Ai\Support\ExecutionAuditEvent;
 use MultiTenantSaas\Modules\Ai\Support\ExecutionStatus;
@@ -26,7 +26,7 @@ use MultiTenantSaas\Modules\Ai\Support\ExecutionStatus;
  * （`EnsureExternalStreamActor` 由外部鉴权写入的 User）累加主体用量，供 resolve
  * 前置闸判超额。结算幂等由 settlement 统一兜底 —— already_settled 时两级都不重复计。
  */
-class UserAiStreamUsageController extends Controller
+class UserAiStreamUsageController extends BaseController
 {
     public function __construct(
         private readonly AiUsageService $usageService,
