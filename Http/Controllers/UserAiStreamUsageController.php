@@ -11,6 +11,7 @@ use MultiTenantSaas\Contracts\ExecutionAuditContract;
 use MultiTenantSaas\Contracts\UsageSettlementContract;
 use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
+use MultiTenantSaas\Modules\Ai\Services\StreamUsageSettlementService;
 use MultiTenantSaas\Modules\Ai\Support\ExecutionAuditEvent;
 use MultiTenantSaas\Modules\Ai\Support\ExecutionStatus;
 
@@ -25,14 +26,31 @@ use MultiTenantSaas\Modules\Ai\Support\ExecutionStatus;
  * 此外叠加**主体级配额**结算：同一笔在租户级记账之外，按 ActorContext 的主体
  * （`EnsureExternalStreamActor` 由外部鉴权写入的 User）累加主体用量，供 resolve
  * 前置闸判超额。结算幂等由 settlement 统一兜底 —— already_settled 时两级都不重复计。
+ *
+ * 原子性（W8 / R9 / BL-102）：settle 标记、租户配额、主体配额三步由
+ * {@see StreamUsageSettlementService} 的**同一个外层事务**提交；任一步失败整笔回滚，
+ * 原 request_id 可重试（不会出现「标记已提交、配额未记账」的永久漏记）。审计旁路在
+ * 事务提交后写入，审计失败不撤销已提交账本。
  */
 class UserAiStreamUsageController extends BaseController
 {
+    /**
+     * 结算原子单元（settle + 租户配额 + User 主体配额同一事务提交）。
+     *
+     * 未显式注入时由本控制器用自身已注入的 AiUsageService / UsageSettlementContract
+     * 组装 —— 保证直接构造控制器（如既有单测）仍走同一套协作者，容器解析则自动注入。
+     */
+    private readonly StreamUsageSettlementService $streamSettlement;
+
     public function __construct(
         private readonly AiUsageService $usageService,
         private readonly UsageSettlementContract $settlement,
         private readonly ExecutionAuditContract $audit,
-    ) {}
+        ?StreamUsageSettlementService $streamSettlement = null,
+    ) {
+        $this->streamSettlement = $streamSettlement
+            ?? new StreamUsageSettlementService($this->usageService, $this->settlement);
+    }
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -58,41 +76,28 @@ class UserAiStreamUsageController extends BaseController
         $metadata['source'] = 'user-ai-stream';
         $metadata['request_id'] = $data['request_id'] ?? null;
 
-        $status = 'settled';
-        if (! empty($data['request_id'])) {
-            $status = $this->settlement->settle(
-                (string) $data['request_id'],
-                'user-ai-stream',
-                $tenantId,
-                null,
-                (int) $data['input_tokens'],
-                (int) $data['output_tokens'],
-            );
-            if ($status === 'settlement_conflict') {
-                abort(409, '请求结算内容冲突');
-            }
+        // 原子单元：settle 标记 + 租户配额 + 主体配额同一事务提交。带 request_id 时严格
+        // 幂等（already_settled 两级都不重复计）；缺 request_id 时原子但**不可去重**。
+        $result = $this->streamSettlement->settleStreamUsage(
+            ! empty($data['request_id']) ? (string) $data['request_id'] : null,
+            'user-ai-stream',
+            $tenantId,
+            null,
+            $data['model'],
+            (int) $data['input_tokens'],
+            (int) $data['output_tokens'],
+            $metadata,
+            true,
+        );
+
+        $status = $result['status'];
+        if ($status === 'settlement_conflict') {
+            abort(409, '请求结算内容冲突');
         }
 
-        $quota = $status === 'already_settled'
-            ? $this->usageService->getOrCreateCurrentQuota()
-            : $this->usageService->recordTextUsage(
-                $data['model'],
-                (int) $data['input_tokens'],
-                (int) $data['output_tokens'],
-                $metadata,
-            );
+        $quota = $result['quota'];
 
-        // 主体级配额结算：与租户级记账同源、同幂等语义 —— 仅在本次真正结算
-        // （非 already_settled）时累加，重复回调不重复计主体用量。
-        if ($status !== 'already_settled') {
-            $this->usageService->recordActorTextUsage(
-                $data['model'],
-                (int) $data['input_tokens'],
-                (int) $data['output_tokens'],
-                $metadata,
-            );
-        }
-
+        // 审计旁路在事务提交之后写入：审计失败不会撤销已提交的账本。
         if (! empty($data['request_id'])) {
             $this->audit->record(new ExecutionAuditEvent(
                 requestId: (string) $data['request_id'], scope: 'user', tenantId: $tenantId, actorId: null,
