@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use MultiTenantSaas\Modules\AiStreaming\Http\Middleware\VerifyStreamingServiceToken;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamResolveController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamToolController;
@@ -52,12 +53,17 @@ Route::post('/user-ai/ask', [UserAiController::class, 'ask'])
 | 限流走 throttle:user-ai-stream：Node→PHP 是 127.0.0.1 回环，$request->ip()
 |   恒为回环地址，故按 Node 透传的 X-Client-IP 计数（见 UserAiServiceProvider）。
 |
+| W2/R3 服务信任边界：这三个端点只由可信 Node 引擎回环调用，**不允许浏览器直连**
+|   （此前仅凭用户 token 即可直取 provider 密钥）。故统一最先挂
+|   VerifyStreamingServiceToken：缺/错服务凭据 401，未配置一律 503；通过后
+|   仍照常走 EnsureExternalStreamActor 的用户身份 + 成员 + 租户门。
+|
 */
 Route::post('/user-ai/stream/resolve', UserAiStreamResolveController::class)
-    ->middleware(['throttle:user-ai-stream', EnsureExternalStreamActor::class]);
+    ->middleware([VerifyStreamingServiceToken::class, 'throttle:user-ai-stream', EnsureExternalStreamActor::class]);
 
 Route::post('/user-ai/stream/tools', UserAiStreamToolController::class)
-    ->middleware(['throttle:user-ai-stream', EnsureExternalStreamActor::class]);
+    ->middleware([VerifyStreamingServiceToken::class, 'throttle:user-ai-stream', EnsureExternalStreamActor::class]);
 
 Route::post('/user-ai/stream/usage', UserAiStreamUsageController::class)
-    ->middleware(['throttle:user-ai-stream', EnsureExternalStreamActor::class]);
+    ->middleware([VerifyStreamingServiceToken::class, 'throttle:user-ai-stream', EnsureExternalStreamActor::class]);
