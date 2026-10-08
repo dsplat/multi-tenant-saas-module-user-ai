@@ -10,6 +10,7 @@ use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\AiTextServiceContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
 use MultiTenantSaas\Modules\Ai\Services\Agent\AuditLogService;
+use MultiTenantSaas\Modules\Ai\Services\Ai\AiResponse;
 use MultiTenantSaas\Modules\Ai\Services\Ai\ContentGuardService;
 use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
 
@@ -53,7 +54,7 @@ class UserAiRuntime
      * @param  string|null  $visitorKey  访客标识（匿名场景，用于审计关联）
      * @param  array  $history  前几轮对话，形如 [['role' => 'user'|'assistant', 'content' => string], ...]
      *                          可选项：既有调用方不传即为单轮问答；脏项由 normalizeHistory 跳过
-     * @return array{allowed: bool, answer: string, sources: array, denied: ?string, category: ?string}
+     * @return array{allowed: bool, answer: string, sources: array, denied: ?string, category: ?string, usage: array{model: string, input_tokens: int, output_tokens: int}|null}
      */
     public function ask(
         string $question,
@@ -79,6 +80,7 @@ class UserAiRuntime
                 'sources' => [],
                 'denied' => 'inbound_blocked',
                 'category' => $inbound['category'],
+                'usage' => null,
             ];
         }
 
@@ -126,13 +128,18 @@ class UserAiRuntime
                     'sources' => [],
                     'denied' => $denied,
                     'category' => null,
+                    'usage' => null,
                 ];
             }
 
             $sources = $this->guardSources($this->extractSources($searchResult));
 
             // ── 5. 合成回答（AI 可选性：失败降级为检索片段） ─────────
-            $answer = $this->composeAnswer($question, $sources, $history, $context);
+            $composed = $this->composeAnswer($question, $sources, $history, $context);
+            $answer = $composed['answer'];
+            // 计费用量随合成结果一并带回：出站守护拦下时**仍须记账** —— provider 的真实
+            // 成本已经产生，不记等于让配额被静默绕过（BL-116）。
+            $usage = $composed['usage'];
 
             // ── 6. 出站内容守护 ─────────────────────────────────────
             $outbound = $this->outboundGuard->check($answer);
@@ -149,6 +156,7 @@ class UserAiRuntime
                     'sources' => [],
                     'denied' => 'outbound_blocked',
                     'category' => $outbound['category'],
+                    'usage' => $usage,
                 ];
             }
 
@@ -166,6 +174,7 @@ class UserAiRuntime
                 'sources' => $sources,
                 'denied' => null,
                 'category' => null,
+                'usage' => $usage,
             ];
         } finally {
             // 请求级上下文用完即清，避免污染后续请求（queue/CLI 伪实例场景）
@@ -303,13 +312,15 @@ class UserAiRuntime
 
     /**
      * 合成回答：优先 LLM，失败/关闭时降级为检索片段
+     *
+     * @return array{answer: string, usage: array{model: string, input_tokens: int, output_tokens: int}|null}
      */
     private function composeAnswer(
         string $question,
         array $sources,
         array $history,
         UserAiContext $context,
-    ): string {
+    ): array {
         $canSynthesize = (bool) config('user-ai.ask.synthesize', true) && $this->aiText !== null;
 
         if ($sources === []) {
@@ -317,11 +328,14 @@ class UserAiRuntime
             // 不编造业务事实；AI 不可用才降级为固定兜底文案（AI 可选性铁律）。
             return $canSynthesize
                 ? $this->guideWithoutSources($question, $history, $context)
-                : (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。如需进一步帮助，请联系工作人员。');
+                : [
+                    'answer' => (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。如需进一步帮助，请联系工作人员。'),
+                    'usage' => null,
+                ];
         }
 
         if (! $canSynthesize) {
-            return $this->fallbackFromSources($sources);
+            return ['answer' => $this->fallbackFromSources($sources), 'usage' => null];
         }
 
         try {
@@ -350,13 +364,39 @@ class UserAiRuntime
 
             $content = trim((string) ($response->content ?? ''));
 
-            return $content !== '' ? $content : $this->fallbackFromSources($sources);
+            // 即便内容为空而回退到片段拼接，用量仍如实带回：这一步已真实调用过模型。
+            return [
+                'answer' => $content !== '' ? $content : $this->fallbackFromSources($sources),
+                'usage' => $this->extractUsage($response),
+            ];
         } catch (\Throwable $e) {
             // AI 可选性铁律：合成失败不阻断，降级为检索片段
             Log::warning('[user-ai] answer synthesis failed, fallback to sources: ' . $e->getMessage());
 
-            return $this->fallbackFromSources($sources);
+            return ['answer' => $this->fallbackFromSources($sources), 'usage' => null];
         }
+    }
+
+    /**
+     * 从 AI 响应提取计费所需的用量三元组
+     *
+     * provider 未回传 usage（部分兼容端点 / 降级响应）时返回 null —— 调用方据此
+     * 放弃记账，而不是把「拿不到用量」伪造成 0 消耗。
+     *
+     * @return array{model: string, input_tokens: int, output_tokens: int}|null
+     */
+    private function extractUsage(AiResponse $response): ?array
+    {
+        if ($response->usage === []) {
+            return null;
+        }
+
+        return [
+            // provider 未回传 model 时回落到配置档位，保证用量记录里模型名可读
+            'model' => $response->model !== '' ? $response->model : (string) config('user-ai.model.model', ''),
+            'input_tokens' => max(0, (int) ($response->usage['prompt_tokens'] ?? 0)),
+            'output_tokens' => max(0, (int) ($response->usage['completion_tokens'] ?? 0)),
+        ];
     }
 
     /**
@@ -365,8 +405,10 @@ class UserAiRuntime
      * 即便检索为空，也要先接住用户（问候/致谢/闲聊友好回应），并在其咨询业务时
      * 主动追问以澄清诉求、帮助定位问题 —— 而不是一句“不知道”把人挡回去。
      * 边界不变：不编造具体业务事实，不暴露系统内部标识；合成失败降级为兜底文案。
+     *
+     * @return array{answer: string, usage: array{model: string, input_tokens: int, output_tokens: int}|null}
      */
-    private function guideWithoutSources(string $question, array $history, UserAiContext $context): string
+    private function guideWithoutSources(string $question, array $history, UserAiContext $context): array
     {
         try {
             $prompt = $this->identityPrefix($context->persona)
@@ -388,14 +430,20 @@ class UserAiRuntime
             $response = $this->aiText->complete($prompt, $this->synthesisOptions($context->modelOptions));
             $content = trim((string) ($response->content ?? ''));
 
-            return $content !== ''
-                ? $content
-                : (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。');
+            return [
+                'answer' => $content !== ''
+                    ? $content
+                    : (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。'),
+                'usage' => $this->extractUsage($response),
+            ];
         } catch (\Throwable $e) {
             // AI 可选性铁律：引导失败不阻断，降级为兜底文案
             Log::warning('[user-ai] guided answer without sources failed, fallback to empty_answer: ' . $e->getMessage());
 
-            return (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。');
+            return [
+                'answer' => (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。'),
+                'usage' => null,
+            ];
         }
     }
 
