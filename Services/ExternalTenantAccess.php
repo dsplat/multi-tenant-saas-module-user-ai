@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace MultiTenantSaas\Modules\UserAi\Services;
 
 use Illuminate\Http\Request;
+use Laravel\Sanctum\Events\TokenAuthenticated;
 use Laravel\Sanctum\PersonalAccessToken;
 use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Modules\Auth\Models\User;
@@ -51,6 +52,12 @@ class ExternalTenantAccess
         }
 
         $user->withAccessToken($accessToken);
+
+        // 补齐 Guard::__invoke 的两个副作用，避免绕开 guard 后行为漂移：
+        // last_used_at 落库，以及 TokenAuthenticated（InfrastructureServiceProvider 的
+        // 滑动续期监听它——漏了会让下游 sanctum.expiration 固定窗口下 C 端 token 静默过期）。
+        $accessToken->forceFill(['last_used_at' => now()])->save();
+        event(new TokenAuthenticated($accessToken));
 
         ActorContext::set((string) $user->getKey(), ActorContext::LEVEL_AUTHENTICATED);
     }
