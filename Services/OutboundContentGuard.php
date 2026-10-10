@@ -16,9 +16,14 @@ use Illuminate\Support\Facades\Log;
  * - 入站守护拦「不该被处理的请求」（破坏性指令、SQL/代码执行诱导）
  * - 出站守护拦「不该被外部看到的回复」（内部标识、调用栈、疑似凭据）
  *
- * 失败语义（与入站一致，遵循 AI 可选性铁律）：
+ * 失败语义（与入站**不同**——出站是外部可见内容的最后一道闸，无下游兜底）：
  * - 命中规则 → 拦截，返回兜底文案（不让外部用户看到风险内容）
- * - 守护自身异常 → 记告警并**放行**（不因守护故障炸断业务链路）
+ * - 守护自身异常 → 记告警并回**固定安全文案**（fail-closed，绝不放行原文）
+ *
+ * 入站守护（ContentGuardService）失败时 fail-open 是安全的：后面还有 L2 确认卡片、
+ * 工具执行咽喉、配额等多道闸；而此处再往后就直接交给外部用户了，
+ * 放行一份「守护没来得及检查」的原文 = 可能把内部标识 / 凭据泄出去。
+ * 故出站守护自身异常时选择 fail-closed，用「暂时无法回答」换掉不可判定的内容。
  *
  * 不拦截业务词：答案里出现「课表 / 成绩 / 缴费」这类业务名词属正常，
  * 规则只针对**内部实现标识**与**敏感信息形态**。
@@ -83,7 +88,7 @@ class OutboundContentGuard
             $category = $this->match($normalized);
 
             if ($category !== null) {
-                $this->recordBlock($category, mb_substr($text, 0, 200));
+                $this->recordBlock($category, $text);
 
                 return [
                     'allowed' => false,
@@ -97,10 +102,20 @@ class OutboundContentGuard
 
             return ['allowed' => true, 'category' => null, 'message' => null];
         } catch (\Throwable $e) {
-            // 可用性铁律：守护自身故障不炸业务链路，记录告警后放行
-            Log::warning('[user-ai-outbound-guard] check failed, degrade to allow: ' . $e->getMessage());
+            // 出站铁律：这是外部可见内容的最后一道闸，没有下游兜底——
+            // fail-open 会把「守护没来得及检查」的原文原样泄给外部用户，
+            // 故 fail-closed：回固定安全文案，绝不返回原文（不因守护故障炸断链路，
+            // 仍返回 200 与可展示文案，只是内容换成安全兜底）。
+            $this->recordGuardFailure($e);
 
-            return ['allowed' => true, 'category' => null, 'message' => null];
+            return [
+                'allowed' => false,
+                'category' => 'guard_error',
+                'message' => (string) config(
+                    'user-ai.outbound_guard.fallback_message',
+                    '抱歉，这个问题我暂时无法回答，请稍后再试或联系工作人员。'
+                ),
+            ];
         }
     }
 
@@ -169,14 +184,29 @@ class OutboundContentGuard
 
     /**
      * 拦截审计（失败静默不影响响应）
+     *
+     * **不落原文**：命中的内容恰恰可能含疑似凭据 / 内部路径（正是被拦的对象），
+     * 把原文摘录写进日志 = 把敏感内容从「外部回复」搬进「日志库」，换个地方泄漏。
+     * 只留不可逆指纹（sha256 前 16 位）+ 长度，供运维按同一内容关联排查。
      */
-    private function recordBlock(string $category, string $excerpt): void
+    private function recordBlock(string $category, string $content): void
     {
-        rescue(function () use ($category, $excerpt) {
+        rescue(function () use ($category, $content) {
             Log::warning('[user-ai-outbound-guard] blocked', [
                 'category' => $category,
-                'excerpt' => $excerpt,
+                'content_hash' => substr(hash('sha256', $content), 0, 16),
+                'content_length' => mb_strlen($content),
             ]);
+        }, report: false);
+    }
+
+    /**
+     * 守护自身异常告警（同样不落原文；异常信息与用户内容无关，可留以便定位）
+     */
+    private function recordGuardFailure(\Throwable $e): void
+    {
+        rescue(function () use ($e) {
+            Log::warning('[user-ai-outbound-guard] check failed, fail-closed: ' . $e->getMessage());
         }, report: false);
     }
 }
