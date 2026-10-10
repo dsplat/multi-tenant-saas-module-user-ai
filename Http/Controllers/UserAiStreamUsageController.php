@@ -76,6 +76,32 @@ class UserAiStreamUsageController extends BaseController
         $metadata['source'] = 'user-ai-stream';
         $metadata['request_id'] = $data['request_id'] ?? null;
 
+        // Node 引擎终态名（success/aborted/failed/timed_out）→ 审计状态。
+        $terminalStatus = ExecutionStatus::fromTerminal($metadata['status'] ?? null);
+        // reconcile=true：provider 未回传用量（中止/首 chunk 后故障/外呼前拒绝），
+        // input/output 是占位 0 —— **不得**当真实 0 消耗结算（否则额度与账单静默少记），
+        // 两级配额（租户 + 主体）均不扣，只记终态审计待对账。
+        if ((bool) ($metadata['reconcile'] ?? false)) {
+            if (! empty($data['request_id'])) {
+                $this->audit->record(new ExecutionAuditEvent(
+                    requestId: (string) $data['request_id'], scope: 'user', tenantId: $tenantId, actorId: null,
+                    tool: null, status: $terminalStatus, reasonCode: 'usage_unavailable',
+                    usage: [],
+                    provenance: ['source' => 'user-ai-stream', 'terminal' => $metadata['status'] ?? null, 'reconcile' => true],
+                ));
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'recorded' => true,
+                    'reconciled' => true,
+                    'tokens_used' => 0,
+                    'quota_used' => null,
+                ],
+            ]);
+        }
+
         // 原子单元：settle 标记 + 租户配额 + 主体配额同一事务提交。带 request_id 时严格
         // 幂等（already_settled 两级都不重复计）；缺 request_id 时原子但**不可去重**。
         $result = $this->streamSettlement->settleStreamUsage(
@@ -101,7 +127,7 @@ class UserAiStreamUsageController extends BaseController
         if (! empty($data['request_id'])) {
             $this->audit->record(new ExecutionAuditEvent(
                 requestId: (string) $data['request_id'], scope: 'user', tenantId: $tenantId, actorId: null,
-                tool: null, status: ExecutionStatus::SUCCESS, reasonCode: null,
+                tool: null, status: $terminalStatus, reasonCode: null,
                 usage: ['input_tokens' => (int) $data['input_tokens'], 'output_tokens' => (int) $data['output_tokens']],
                 provenance: ['source' => 'user-ai-stream', 'settlement' => $status],
             ));
