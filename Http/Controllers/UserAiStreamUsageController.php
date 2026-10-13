@@ -10,6 +10,7 @@ use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\ExecutionAuditContract;
 use MultiTenantSaas\Contracts\UsageSettlementContract;
 use MultiTenantSaas\Http\Controllers\BaseController;
+use MultiTenantSaas\Modules\Ai\Services\AiUsageReservationService;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\Ai\Services\StreamUsageSettlementService;
 use MultiTenantSaas\Modules\Ai\Support\ExecutionAuditEvent;
@@ -83,6 +84,8 @@ class UserAiStreamUsageController extends BaseController
         // 两级配额（租户 + 主体）均不扣，只记终态审计待对账。
         if ((bool) ($metadata['reconcile'] ?? false)) {
             if (! empty($data['request_id'])) {
+                app(AiUsageReservationService::class)->terminal(
+                    (string) $data['request_id'], 'user-ai-stream', $data['model'], (bool) ($metadata['dispatched'] ?? true));
                 $this->audit->record(new ExecutionAuditEvent(
                     requestId: (string) $data['request_id'], scope: 'user', tenantId: $tenantId, actorId: null,
                     tool: null, status: $terminalStatus, reasonCode: 'usage_unavailable',

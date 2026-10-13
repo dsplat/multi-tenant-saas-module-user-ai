@@ -9,6 +9,7 @@ use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\AiTextServiceContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
+use MultiTenantSaas\Modules\Ai\Exceptions\AiUsageAdmissionException;
 use MultiTenantSaas\Modules\Ai\Services\Agent\AuditLogService;
 use MultiTenantSaas\Modules\Ai\Services\Ai\AiResponse;
 use MultiTenantSaas\Modules\Ai\Services\Ai\ContentGuardService;
@@ -369,6 +370,8 @@ class UserAiRuntime
                 'answer' => $content !== '' ? $content : $this->fallbackFromSources($sources),
                 'usage' => $this->extractUsage($response),
             ];
+        } catch (AiUsageAdmissionException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             // AI 可选性铁律：合成失败不阻断，降级为检索片段
             Log::warning('[user-ai] answer synthesis failed, fallback to sources: ' . $e->getMessage());
@@ -394,6 +397,7 @@ class UserAiRuntime
         return [
             // provider 未回传 model 时回落到配置档位，保证用量记录里模型名可读
             'model' => $response->model !== '' ? $response->model : (string) config('user-ai.model.model', ''),
+            ...(! empty($response->usage['_settled_request_id']) ? ['settled_request_id' => $response->usage['_settled_request_id']] : []),
             'input_tokens' => max(0, (int) ($response->usage['prompt_tokens'] ?? 0)),
             'output_tokens' => max(0, (int) ($response->usage['completion_tokens'] ?? 0)),
         ];
@@ -436,6 +440,8 @@ class UserAiRuntime
                     : (string) config('user-ai.ask.empty_answer', '抱歉，知识库里暂时没有找到相关内容。'),
                 'usage' => $this->extractUsage($response),
             ];
+        } catch (AiUsageAdmissionException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             // AI 可选性铁律：引导失败不阻断，降级为兜底文案
             Log::warning('[user-ai] guided answer without sources failed, fallback to empty_answer: ' . $e->getMessage());

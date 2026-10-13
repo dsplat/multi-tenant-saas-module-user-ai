@@ -9,7 +9,9 @@ use Illuminate\Http\Request;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\IdGeneratorContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
+use MultiTenantSaas\Exceptions\DomainException;
 use MultiTenantSaas\Http\Controllers\BaseController;
+use MultiTenantSaas\Modules\Ai\Services\AiUsageReservationService;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ResolveController;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
@@ -105,6 +107,18 @@ class UserAiStreamResolveController extends BaseController
             'max_tool_calls' => (int) config('user-ai.stream.max_tool_calls', 2),
             'tools' => $tools,
         ];
+
+        $messages = $request->validate([
+            'messages' => ['sometimes', 'array', 'max:40'],
+            'messages.*.role' => ['required', 'in:user,assistant'],
+            'messages.*.content' => ['required', 'string', 'max:20000'],
+        ])['messages'] ?? [];
+        try {
+            app(AiUsageReservationService::class)
+                ->reserveStream($payload, $messages, 'user-ai-stream', true);
+        } catch (DomainException $exception) {
+            return response()->json(['success' => false, 'message' => $exception->getMessage()], 402);
+        }
 
         // direct 模式：下发 api_key（仅限 Node 与 PHP 同机/内网回环链路）
         if (config('ai-streaming.key_delivery', 'direct') === 'direct') {

@@ -11,6 +11,7 @@ use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\UsageSettlementContract;
 use MultiTenantSaas\Http\Controllers\BaseController;
+use MultiTenantSaas\Modules\Ai\Exceptions\AiUsageAdmissionException;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\Ai\Services\StreamUsageSettlementService;
 use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
@@ -84,12 +85,16 @@ class UserAiController extends BaseController
         $actorId = ActorContext::getId();
         $actorLevel = ActorContext::getLevel();
 
-        $result = $this->runtime->ask(
-            $validated['question'],
-            $tenantId,
-            $validated['visitor_key'] ?? null,
-            context: new UserAiContext(accessLevel: $actorLevel, actorId: $actorId),
-        );
+        try {
+            $result = $this->runtime->ask(
+                $validated['question'],
+                $tenantId,
+                $validated['visitor_key'] ?? null,
+                context: new UserAiContext(accessLevel: $actorLevel, actorId: $actorId),
+            );
+        } catch (AiUsageAdmissionException $exception) {
+            return response()->json(['success' => false, 'message' => $exception->getMessage()], 402);
+        }
 
         // 用后记账：把本轮真实消耗计入租户级 + 主体级配额（BL-116）
         $this->settleUsage($tenantId, $actorId, $actorLevel, $result['usage'] ?? null);
@@ -125,7 +130,7 @@ class UserAiController extends BaseController
      */
     private function settleUsage(int $tenantId, ?string $actorId, ?string $actorLevel, ?array $usage): void
     {
-        if ($usage === null || $tenantId <= 0) {
+        if ($usage === null || $tenantId <= 0 || ! empty($usage['settled_request_id'])) {
             return;
         }
 
