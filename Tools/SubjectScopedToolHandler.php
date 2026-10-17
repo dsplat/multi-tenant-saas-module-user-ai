@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace MultiTenantSaas\Modules\UserAi\Tools;
 
-use MultiTenantSaas\Context\ActorContext;
+use MultiTenantSaas\Context\ExecutionIdentity;
+use MultiTenantSaas\Context\ExecutionIdentityManager;
 use MultiTenantSaas\Modules\Ai\Services\Agent\Contracts\ToolHandlerContract;
 
 /**
@@ -15,8 +16,9 @@ use MultiTenantSaas\Modules\Ai\Services\Agent\Contracts\ToolHandlerContract;
  * 直到线上有人查到了别人的成绩。
  *
  * 框架能保证的只有三件事，其余（具体查什么、怎么查）属业务：
- *   1. **主体 ID 只来自服务端身份**（ActorContext），绝不接受工具入参
- *      —— AI 生成的参数是不可信输入，若允许它传 user_id，模型被诱导就能查别人
+ *   1. **主体 ID 只来自服务端执行身份**（ExecutionIdentity，显式 type=user），
+ *      绝不接受工具入参 —— AI 生成的参数是不可信输入，若允许它传 user_id，
+ *      模型被诱导就能查别人；operator / service 的同数字 ID 也不得流入
  *   2. **身份未知就直接拒绝**：匿名主体没有可约束的行，不存在「查全部」这种行为
  *   3. **结果归属自检**：返回的每条记录都必须带归属列且等于主体 ID，
  *      否则拒绝整次调用 —— 把「忘了加 WHERE」从静默泄漏变成一次明确的拒绝
@@ -70,13 +72,20 @@ abstract class SubjectScopedToolHandler implements ToolHandlerContract
     }
 
     /**
-     * 主体 ID 从服务端身份解析
+     * 主体 ID 从服务端执行身份解析（F-05：只认 ExecutionIdentity 显式 type=user）
      *
-     * 只有已识别/已核身的主体才有 ID；匿名（ActorContext 未设 id）返回 null。
+     * 匿名（subjectId=null）与未装载都返回 null；operator / service 的 ID
+     * 绝不流入 user 归属 —— 同数字 ID 是常态，无类型检查就是越权。
      */
     private function resolveSubjectId(): ?int
     {
-        $id = ActorContext::getId();
+        $identity = $this->identityManager()->current();
+
+        if ($identity === null || $identity->type !== ExecutionIdentity::TYPE_USER) {
+            return null;
+        }
+
+        $id = $identity->subjectId;
 
         if ($id === null || ! is_numeric($id)) {
             return null;
@@ -85,6 +94,18 @@ abstract class SubjectScopedToolHandler implements ToolHandlerContract
         $subjectId = (int) $id;
 
         return $subjectId > 0 ? $subjectId : null;
+    }
+
+    /**
+     * 唯一存储入口（与 ActorContext / ToolRegistry 同一绑定）
+     */
+    private function identityManager(): ExecutionIdentityManager
+    {
+        if (! app()->bound(ExecutionIdentityManager::class)) {
+            app()->singleton(ExecutionIdentityManager::class);
+        }
+
+        return app(ExecutionIdentityManager::class);
     }
 
     /**

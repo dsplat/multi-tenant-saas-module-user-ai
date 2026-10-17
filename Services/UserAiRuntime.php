@@ -6,7 +6,10 @@ namespace MultiTenantSaas\Modules\UserAi\Services;
 
 use Illuminate\Support\Facades\Log;
 use MultiTenantSaas\Context\ActorContext;
+use MultiTenantSaas\Context\ExecutionIdentity;
+use MultiTenantSaas\Context\ExecutionIdentityManager;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Context\TrustedExecutionInput;
 use MultiTenantSaas\Contracts\AiTextServiceContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
 use MultiTenantSaas\Modules\Ai\Exceptions\AiUsageAdmissionException;
@@ -21,8 +24,9 @@ use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
  * 这是框架第一条**面向外部主体**的 AI 链路。与 operator 端（AssistantController /
  * AiStreaming / iBot）的关键差别：
  *
- * - 身份：走 ActorContext（外部主体），不走 Operator RBAC
- * - 工具：**必须经 ToolRegistry::execute() 咽喉**，暴露层闸门（第③站）在此生效
+ * - 身份：走 ExecutionIdentity（user_ai 子作用域；channel 父 → user_ai 子，
+ *   system 父不建子作用域），投影到 ActorContext 供旧消费者使用
+ * - 工具：**必须经 ToolRegistry::execute() 咽喉**，暴露层闸门（第③站）按 surface 判定
  * - 守护：入站 ContentGuardService + 出站 OutboundContentGuard 双向夹击
  * - 权限：对外硬禁 L2 —— 白名单里只登记 L1 只读工具，写操作一律不可达
  *
@@ -89,21 +93,20 @@ class UserAiRuntime
         // 在进链路前先净化：脏历史绝不允许把整条对外问答炸断。
         $history = $this->normalizeHistory($history);
 
-        // ── 3. 设置外部主体上下文 ────────────────────────────────────
+        // ── 3. 装载执行身份（channel 父 → user_ai 子作用域） ─────────
         // 等级**由调用方（服务端）判定后传入**，本层不自行推断：
         // 智能客服会按会话身份（是否已关联用户/是否已核身）传 authenticated / verified，
         // 公开 FAQ 端点不传则为 anonymous。
         //
         // ⚠ 等级绝不可来自请求体或对话内容 —— 用户自称「我是张三」不构成任何等级。
-        // ActorContext::set() 对非法等级会 fail-closed 回落 anonymous，这是最后一层兜底。
-        ActorContext::set($context->actorId, $context->accessLevel ?? ActorContext::LEVEL_ANONYMOUS, $visitorKey);
-
-        // 工具范围（可选）——只收窄，不放宽；见 ActorContext::setToolScope 的说明
-        if ($context->toolScope !== null) {
-            ActorContext::setToolScope($context->toolScope);
-        }
-
-        try {
+        //
+        // 生命周期（ADR v4 §1.7）：
+        // - 有父作用域（channel 父 / HTTP 入口根）→ runChild 嵌套，pop 恢复父项，
+        //   **不 clear 外层**（旧 finally clear 会提前弹出入口作用域）
+        // - service/system 父（系统补发）→ **不建 user 子作用域**，直接以父身份执行
+        // - 无父作用域 → runRoot 自建根，边界由 runRoot finally 销毁
+        // toolScope 由 runChild 自动取「父上限 ∩ 子应得」交集，只能收窄。
+        $work = function () use ($question, $tenantId, $visitorKey, $history, $context): array {
             // ── 4. 经咽喉执行知识检索（暴露层闸门在此生效） ──────────
             // 必须走 ToolRegistry::execute()，不得直接调 ExternalKbService ——
             // 直调会绕过执行咽喉，重蹈「执法点分散」的覆辙。
@@ -177,10 +180,81 @@ class UserAiRuntime
                 'category' => null,
                 'usage' => $usage,
             ];
-        } finally {
-            // 请求级上下文用完即清，避免污染后续请求（queue/CLI 伪实例场景）
-            ActorContext::clear();
+        };
+
+        return $this->runWithSubjectScope($context, $visitorKey, $tenantId, $work);
+    }
+
+    /**
+     * 在正确的执行身份作用域内运行问答主体
+     *
+     * channel 父 → user_ai 子作用域（runChild，pop 恢复父项）；
+     * service/system 父 → 不建 user 子作用域（系统补发不冒充用户）；
+     * 无父 → runRoot 自建。**finally 不清外层**，边界销毁归 runRoot/runChild。
+     *
+     * @param  Closure(): array  $work
+     * @return array{allowed: bool, answer: string, sources: array, denied: ?string, category: ?string, usage: ?array}
+     */
+    private function runWithSubjectScope(UserAiContext $context, ?string $visitorKey, int $tenantId, \Closure $work): array
+    {
+        $manager = $this->identityManager();
+        $current = $manager->current();
+
+        // service/system 父（系统补发、对账等）：不建 user 子作用域，直接以父身份执行。
+        // 父 surface=system 不进 C 端暴露门，也无用户归属语义（F-05 示例 3）。
+        if ($current !== null && $current->surface === ExecutionIdentity::SURFACE_SYSTEM) {
+            return $work();
         }
+
+        $input = $this->userAiInput($context, $visitorKey, $tenantId);
+
+        // 有父作用域（channel 父 / HTTP 入口根）→ 嵌套子作用域；无父 → 自建根
+        return $current !== null
+            ? $manager->runChild($input, $work)
+            : $manager->runRoot($input, $work);
+    }
+
+    /**
+     * 组装 user_ai 子/根作用域输入（type=user, surface=user_ai）
+     *
+     * toolScope 只收窄：runChild 会再取「父上限 ∩ 本范围」交集。
+     */
+    private function userAiInput(UserAiContext $context, ?string $visitorKey, int $tenantId): TrustedExecutionInput
+    {
+        $level = $context->accessLevel ?? ActorContext::LEVEL_ANONYMOUS;
+        if (! in_array($level, ExecutionIdentity::LEVELS, true)) {
+            // fail-closed 到最低等级（与旧 ActorContext::set 兜底一致）
+            $level = ExecutionIdentity::LEVEL_ANONYMOUS;
+        }
+
+        $isAnonymous = $context->actorId === null || $context->actorId === ''
+            || $level === ExecutionIdentity::LEVEL_ANONYMOUS;
+
+        return new TrustedExecutionInput(
+            identity: new ExecutionIdentity(
+                type: ExecutionIdentity::TYPE_USER,
+                surface: ExecutionIdentity::SURFACE_USER_AI,
+                subjectId: $isAnonymous ? null : $context->actorId,
+                tenantId: (string) $tenantId,
+                level: $isAnonymous ? ExecutionIdentity::LEVEL_ANONYMOUS : $level,
+                authSource: 'channel',
+                channelIdentity: $visitorKey,
+                toolScope: $context->toolScope,
+            ),
+            toolScope: $context->toolScope,
+        );
+    }
+
+    /**
+     * 唯一存储入口（与 ActorContext / 中间件同一绑定）
+     */
+    private function identityManager(): ExecutionIdentityManager
+    {
+        if (! app()->bound(ExecutionIdentityManager::class)) {
+            app()->singleton(ExecutionIdentityManager::class);
+        }
+
+        return app(ExecutionIdentityManager::class);
     }
 
     /**

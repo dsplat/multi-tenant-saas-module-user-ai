@@ -6,9 +6,13 @@ namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Log;
 use MultiTenantSaas\Context\ActorContext;
+use MultiTenantSaas\Context\ExecutionIdentity;
+use MultiTenantSaas\Context\ExecutionIdentityManager;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Context\TrustedExecutionInput;
 use MultiTenantSaas\Contracts\UsageSettlementContract;
 use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\Ai\Exceptions\AiUsageAdmissionException;
@@ -81,9 +85,11 @@ class UserAiController extends BaseController
         }
 
         // 主体身份须在调用前捕获：UserAiRuntime::ask() 在 finally 里清空 ActorContext，
-        // 而用后记账的主体级腿依赖它（BL-116）。
+        // 而用后记账的主体级腿依赖它（BL-116）。同时捕获完整执行身份快照，
+        // 供结算在正确作用域内重建（不再「清空后重设」）。
         $actorId = ActorContext::getId();
         $actorLevel = ActorContext::getLevel();
+        $capturedIdentity = $this->identityManager()->current();
 
         try {
             $result = $this->runtime->ask(
@@ -97,7 +103,7 @@ class UserAiController extends BaseController
         }
 
         // 用后记账：把本轮真实消耗计入租户级 + 主体级配额（BL-116）
-        $this->settleUsage($tenantId, $actorId, $actorLevel, $result['usage'] ?? null);
+        $this->settleUsage($tenantId, $actorId, $actorLevel, $result['usage'] ?? null, $capturedIdentity);
 
         return response()->json([
             'success' => true,
@@ -118,9 +124,10 @@ class UserAiController extends BaseController
      * 徒增 settlement 表行数。故本路径原子但**不可幂等**（与结算服务的文档边界一致）
      * ——同步链路每次都是新的一次 LLM 生成，本就该各记一笔。
      *
-     * 主体级腿依赖 ActorContext（`recordActorTextUsage` 未显式传 actorId 时回落读取），
-     * 而 `UserAiRuntime::ask()` 的 finally 已清空上下文；这里按捕获的主体重设，用完
-     * 即清，避免污染后续请求。
+     * 主体级腿依赖 ActorContext（`recordActorTextUsage` 未显式传 actorId 时回落读取）。
+     * 旧实现在 `UserAiRuntime::ask()` 的 finally 清空后「清空再重设」；现改为在
+     * **正确边界内**用 runRoot/runChild 重建同内容作用域（不引入双存储、不销毁外层）：
+     * 外层作用域仍在则 runChild（嵌套压栈），否则自建 runRoot 结算作用域。
      *
      * 无用量时（未发生 LLM 调用 / provider 未回传 usage）不记账 —— 不伪造 0 消耗。
      *
@@ -128,8 +135,13 @@ class UserAiController extends BaseController
      * （且本路径不可幂等重试）。失败记 warning 供告警；该缺口只可能出现在数据库不可
      * 用的窗口内，而同一故障会让下一次请求的前置闸同样读不到配额——缺口自限。
      */
-    private function settleUsage(int $tenantId, ?string $actorId, ?string $actorLevel, ?array $usage): void
-    {
+    private function settleUsage(
+        int $tenantId,
+        ?string $actorId,
+        ?string $actorLevel,
+        ?array $usage,
+        ?ExecutionIdentity $capturedIdentity = null,
+    ): void {
         if ($usage === null || $tenantId <= 0 || ! empty($usage['settled_request_id'])) {
             return;
         }
@@ -141,9 +153,10 @@ class UserAiController extends BaseController
             return;
         }
 
-        try {
-            ActorContext::set($actorId, $actorLevel ?? ActorContext::LEVEL_ANONYMOUS);
+        $manager = $this->identityManager();
+        $input = $this->settlementIdentityInput($tenantId, $actorId, $actorLevel, $capturedIdentity);
 
+        $work = function () use ($tenantId, $actorId, $usage, $inputTokens, $outputTokens): void {
             $this->streamSettlement->settleStreamUsage(
                 null,
                 'user-ai-ask',
@@ -155,6 +168,16 @@ class UserAiController extends BaseController
                 ['source' => 'user-ai-ask'],
                 true,
             );
+        };
+
+        try {
+            if ($manager->current() !== null) {
+                // 外层作用域仍在（Runtime 不再清父时）：嵌套子作用域，pop 后恢复父项
+                $manager->runChild($input, $work);
+            } else {
+                // 外层已被 Runtime 清空：自建结算作用域，边界由 runRoot 销毁
+                $manager->runRoot($input, $work);
+            }
         } catch (\Throwable $e) {
             Log::warning('[user-ai] ask usage settlement failed: ' . $e->getMessage(), [
                 'tenant_id' => $tenantId,
@@ -162,9 +185,48 @@ class UserAiController extends BaseController
                 'input_tokens' => $inputTokens,
                 'output_tokens' => $outputTokens,
             ]);
-        } finally {
-            ActorContext::clear();
         }
+    }
+
+    /**
+     * 组装结算用执行身份输入：优先用调用前捕获的快照，否则按捕获字段重建 user_ai 身份。
+     */
+    private function settlementIdentityInput(
+        int $tenantId,
+        ?string $actorId,
+        ?string $actorLevel,
+        ?ExecutionIdentity $capturedIdentity,
+    ): TrustedExecutionInput {
+        if ($capturedIdentity !== null) {
+            return new TrustedExecutionInput(identity: $capturedIdentity);
+        }
+
+        $isAnonymous = $actorId === null
+            || $actorLevel === null
+            || $actorLevel === ActorContext::LEVEL_ANONYMOUS;
+
+        return new TrustedExecutionInput(
+            identity: new ExecutionIdentity(
+                type: ExecutionIdentity::TYPE_USER,
+                surface: ExecutionIdentity::SURFACE_USER_AI,
+                subjectId: $isAnonymous ? null : $actorId,
+                tenantId: (string) $tenantId,
+                level: $isAnonymous ? ExecutionIdentity::LEVEL_ANONYMOUS : $actorLevel,
+                authSource: 'channel',
+            ),
+        );
+    }
+
+    /**
+     * 唯一存储入口（与 ActorContext / 中间件同一绑定）
+     */
+    private function identityManager(): ExecutionIdentityManager
+    {
+        if (! App::bound(ExecutionIdentityManager::class)) {
+            App::singleton(ExecutionIdentityManager::class);
+        }
+
+        return App::make(ExecutionIdentityManager::class);
     }
 
     /**
