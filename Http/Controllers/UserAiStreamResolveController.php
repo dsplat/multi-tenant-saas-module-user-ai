@@ -117,7 +117,7 @@ class UserAiStreamResolveController extends BaseController
             app(AiUsageReservationService::class)
                 ->reserveStream($payload, $messages, 'user-ai-stream', true);
         } catch (DomainException $exception) {
-            return response()->json(['success' => false, 'message' => $exception->getMessage()], 402);
+            return response()->json(['success' => false, 'message' => $exception->getMessage()], $exception->getStatusCode());
         }
 
         // direct 模式：下发 api_key（仅限 Node 与 PHP 同机/内网回环链路）
