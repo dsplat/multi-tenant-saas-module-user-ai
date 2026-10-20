@@ -672,25 +672,25 @@ class UserAiRuntime
     private function audit(string $action, int $tenantId, ?string $visitorKey, array $detail, string $status): void
     {
         try {
-            if (TenantContext::getId() === null) {
-                TenantContext::setTenantId((string) $tenantId);
-            }
-
-            $this->auditLog->log(
-                action: $action,
-                summary: null,
-                agentId: null,
-                conversationId: null,
-                operatorId: null,
-                targetType: 'user_ai',
-                targetId: $visitorKey,
-                detail: $detail + [
-                    'actor_id' => ActorContext::getId(),
-                    'actor_level' => ActorContext::getLevel(),
-                    'actor_channel_identity' => ActorContext::getChannelIdentity(),
-                ],
-                status: $status,
-            );
+            // 审计写入依赖租户上下文；缺失时建立、结束（含异常）恢复，
+            // 已建立时只校验一致性，避免把审计写到错误租户或残留给下一任务。
+            TenantContext::runInTenant((string) $tenantId, function () use ($action, $visitorKey, $detail, $status): void {
+                $this->auditLog->log(
+                    action: $action,
+                    summary: null,
+                    agentId: null,
+                    conversationId: null,
+                    operatorId: null,
+                    targetType: 'user_ai',
+                    targetId: $visitorKey,
+                    detail: $detail + [
+                        'actor_id' => ActorContext::getId(),
+                        'actor_level' => ActorContext::getLevel(),
+                        'actor_channel_identity' => ActorContext::getChannelIdentity(),
+                    ],
+                    status: $status,
+                );
+            });
         } catch (\Throwable) {
             // 审计失败不影响对外响应
         }
