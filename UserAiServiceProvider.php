@@ -10,10 +10,13 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use MultiTenantSaas\Contracts\AiTextServiceContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
+use MultiTenantSaas\Contracts\UserAccessPolicyContract;
 use MultiTenantSaas\Modules\Ai\Services\Agent\AuditLogService;
 use MultiTenantSaas\Modules\Ai\Services\Ai\ContentGuardService;
 use MultiTenantSaas\Modules\Contracts\ModuleServiceProvider;
+use MultiTenantSaas\Modules\UserAi\Access\UserAccessContextResolver;
 use MultiTenantSaas\Modules\UserAi\Services\OutboundContentGuard;
+use MultiTenantSaas\Modules\UserAi\Services\UserAccessPolicy;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
 
 /**
@@ -40,6 +43,9 @@ class UserAiServiceProvider extends ModuleServiceProvider
 
     protected function registerModuleBindings(): void
     {
+        $this->app->singleton(UserAccessPolicyContract::class, UserAccessPolicy::class);
+        $this->app->singleton(UserAccessContextResolver::class);
+
         $this->app->singleton(OutboundContentGuard::class, function () {
             return new OutboundContentGuard;
         });

@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace MultiTenantSaas\Modules\UserAi\Services;
 
+use MultiTenantSaas\Access\UserAccessContext;
+use MultiTenantSaas\Access\UserAccessDecision;
+use MultiTenantSaas\Access\UserResourcePolicy;
 use MultiTenantSaas\Contracts\UserAccessPolicyContract;
-use MultiTenantSaas\Modules\UserAi\Access\UserAccessContext;
-use MultiTenantSaas\Modules\UserAi\Access\UserAccessDecision;
-use MultiTenantSaas\Modules\UserAi\Access\UserResourcePolicy;
 
 final class UserAccessPolicy implements UserAccessPolicyContract
 {

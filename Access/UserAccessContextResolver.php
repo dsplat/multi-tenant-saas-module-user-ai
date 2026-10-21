@@ -6,6 +6,7 @@ namespace MultiTenantSaas\Modules\UserAi\Access;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use MultiTenantSaas\Access\UserAccessContext;
 use MultiTenantSaas\Context\ActorContext;
 
 /**
