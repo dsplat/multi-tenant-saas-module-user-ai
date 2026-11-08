@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use MultiTenantSaas\Modules\AiStreaming\Http\Middleware\VerifyStreamingServiceToken;
+use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiCapabilitiesController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamResolveController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamToolController;
@@ -31,6 +32,9 @@ use MultiTenantSaas\Modules\UserAi\Http\Middleware\EnsureExternalStreamActor;
 |   会对此断言并失败。
 |
 */
+
+Route::get('/user-ai/capabilities', UserAiCapabilitiesController::class)
+    ->middleware(['throttle:user-ai', EnsureExternalActor::class]);
 
 Route::post('/user-ai/ask', [UserAiController::class, 'ask'])
     ->middleware(['throttle:user-ai', EnsureExternalActor::class]);

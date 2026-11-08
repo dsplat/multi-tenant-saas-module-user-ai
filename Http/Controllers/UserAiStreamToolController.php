@@ -10,6 +10,7 @@ use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
 use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ToolExecuteController;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiSourcePresenter;
 
 /**
  * User 端 AI 流式工具执行（Node SSE 引擎回调）
@@ -28,7 +29,10 @@ use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ToolExecuteController;
  */
 class UserAiStreamToolController extends BaseController
 {
-    public function __construct(private readonly ToolRegistryContract $toolRegistry) {}
+    public function __construct(
+        private readonly ToolRegistryContract $toolRegistry,
+        private readonly UserAiSourcePresenter $sourcePresenter,
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -69,7 +73,10 @@ class UserAiStreamToolController extends BaseController
 
         return response()->json([
             'success' => true,
-            'data' => ['result' => $result],
+            'data' => [
+                'result' => $result,
+                'sources' => $this->sourcePresenter->fromToolResult($data['tool'], $result),
+            ],
         ]);
     }
 }

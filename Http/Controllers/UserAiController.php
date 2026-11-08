@@ -20,6 +20,7 @@ use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\Ai\Services\StreamUsageSettlementService;
 use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiSourcePresenter;
 
 /**
  * User 端 AI 公开接口
@@ -42,14 +43,18 @@ class UserAiController extends BaseController
      */
     private readonly StreamUsageSettlementService $streamSettlement;
 
+    private readonly UserAiSourcePresenter $sourcePresenter;
+
     public function __construct(
         private readonly UserAiRuntime $runtime,
         private readonly AiUsageService $usageService,
         private readonly UsageSettlementContract $settlement,
         ?StreamUsageSettlementService $streamSettlement = null,
+        ?UserAiSourcePresenter $sourcePresenter = null,
     ) {
         $this->streamSettlement = $streamSettlement
             ?? new StreamUsageSettlementService($this->usageService, $this->settlement);
+        $this->sourcePresenter = $sourcePresenter ?? new UserAiSourcePresenter;
     }
 
     /**
@@ -110,7 +115,7 @@ class UserAiController extends BaseController
             'data' => [
                 'allowed' => $result['allowed'],
                 'answer' => $result['answer'],
-                'sources' => $this->presentSources($result['sources']),
+                'sources' => $this->sourcePresenter->present($result['sources']),
                 'denied' => $result['denied'],
             ],
         ]);
@@ -179,7 +184,7 @@ class UserAiController extends BaseController
                 $manager->runRoot($input, $work);
             }
         } catch (\Throwable $e) {
-            Log::warning('[user-ai] ask usage settlement failed: ' . $e->getMessage(), [
+            Log::warning('[user-ai] ask usage settlement failed: '.$e->getMessage(), [
                 'tenant_id' => $tenantId,
                 'actor_id' => $actorId,
                 'input_tokens' => $inputTokens,
@@ -227,41 +232,5 @@ class UserAiController extends BaseController
         }
 
         return App::make(ExecutionIdentityManager::class);
-    }
-
-    /**
-     * 呈现知识片段（对外只暴露必要字段，避免内部标识泄漏）
-     */
-    private function presentSources(array $sources): array
-    {
-        $presented = [];
-
-        foreach (array_slice($sources, 0, 5) as $item) {
-            if (! is_array($item)) {
-                $text = trim((string) $item);
-                if ($text !== '') {
-                    $presented[] = ['content' => mb_substr($text, 0, 500)];
-                }
-
-                continue;
-            }
-
-            $content = trim((string) ($item['content'] ?? $item['text'] ?? $item['title'] ?? ''));
-            if ($content === '') {
-                continue;
-            }
-
-            // 只透出内容与可选标题；不透出 provider 内部 id / 路径 / 元数据
-            $row = ['content' => mb_substr($content, 0, 500)];
-
-            $title = trim((string) ($item['title'] ?? ''));
-            if ($title !== '') {
-                $row['title'] = mb_substr($title, 0, 120);
-            }
-
-            $presented[] = $row;
-        }
-
-        return $presented;
     }
 }

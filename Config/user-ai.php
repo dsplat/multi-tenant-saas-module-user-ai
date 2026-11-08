@@ -33,6 +33,25 @@ return [
         'allowed' => [
             'knowledge_search' => 'anonymous',
         ],
+        'labels' => [
+            'knowledge_search' => [
+                'running' => '正在查阅相关资料',
+                'done' => '已查阅相关资料',
+                'error' => '资料查阅失败',
+            ],
+        ],
+    ],
+
+    'ui' => [
+        'title' => '智能客服',
+        'welcome' => '你好，我可以帮你解答课程、活动与常见问题。',
+        'quick_questions' => [
+            '如何报名课程？',
+            '如何查看我的订单？',
+            '如何联系工作人员？',
+        ],
+        'disclaimer' => 'AI 回答仅供参考，具体以实际页面与工作人员说明为准。',
+        'input_max_chars' => 2000,
     ],
 
     /*
