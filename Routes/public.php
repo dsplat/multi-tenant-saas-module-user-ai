@@ -4,6 +4,8 @@ use Illuminate\Support\Facades\Route;
 use MultiTenantSaas\Modules\AiStreaming\Http\Middleware\VerifyStreamingServiceToken;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiCapabilitiesController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiController;
+use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiConversationController;
+use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamMessageController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamResolveController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamToolController;
 use MultiTenantSaas\Modules\UserAi\Http\Controllers\UserAiStreamUsageController;
@@ -41,6 +43,26 @@ Route::post('/user-ai/ask', [UserAiController::class, 'ask'])
 
 /*
 |--------------------------------------------------------------------------
+| C 端会话（F4：独立会话表，不复用 operator conversations）
+|--------------------------------------------------------------------------
+|
+| 归属只由服务端身份判定（租户经 EnsureExternalActor，主体经已装载身份）；
+| 请求体里的 user_id 不参与。他人 / 不存在的 conversation_id 统一 404。
+|
+*/
+Route::get('/user-ai/conversations', [UserAiConversationController::class, 'index'])
+    ->middleware(['throttle:user-ai', EnsureExternalActor::class]);
+
+Route::get('/user-ai/conversations/{id}', [UserAiConversationController::class, 'show'])
+    ->whereNumber('id')
+    ->middleware(['throttle:user-ai', EnsureExternalActor::class]);
+
+Route::delete('/user-ai/conversations/{id}', [UserAiConversationController::class, 'destroy'])
+    ->whereNumber('id')
+    ->middleware(['throttle:user-ai', EnsureExternalActor::class]);
+
+/*
+|--------------------------------------------------------------------------
 | User AI 流式契约（Node SSE 引擎回调）
 |--------------------------------------------------------------------------
 |
@@ -70,4 +92,11 @@ Route::post('/user-ai/stream/tools', UserAiStreamToolController::class)
     ->middleware([VerifyStreamingServiceToken::class, 'throttle:user-ai-stream', EnsureExternalStreamActor::class]);
 
 Route::post('/user-ai/stream/usage', UserAiStreamUsageController::class)
+    ->middleware([VerifyStreamingServiceToken::class, 'throttle:user-ai-stream', EnsureExternalStreamActor::class]);
+
+/*
+| 流结束消息回环（F4）：scope=user 时 Node 在此上报 assistant / tool / usage。
+| 归属仍由用户身份 + 租户门判定；operator 侧继续走 /ai-streaming/messages/report。
+*/
+Route::post('/user-ai/stream/messages', UserAiStreamMessageController::class)
     ->middleware([VerifyStreamingServiceToken::class, 'throttle:user-ai-stream', EnsureExternalStreamActor::class]);

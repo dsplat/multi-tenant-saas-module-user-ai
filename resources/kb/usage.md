@@ -2,7 +2,7 @@
 title: User AI（对外 AI 基座）
 audience: operator
 locale: zh
-version: 1.1
+version: 1.2
 ---
 
 # User AI 模块
@@ -30,6 +30,31 @@ Body: { "tenant_slug": "your-school", "question": "开学时间是什么时候�
 - 接口限流：每分钟每 IP 20 次
 - 返回 `answer`（回答文本）与 `sources`（相关知识片段）
 
+## C 端会话（独立会话表）
+
+C 端多轮会话持久化在 `user_ai_conversations` / `user_ai_messages`，**不复用** operator 的
+`conversations`（后者承载渠道语义与接待态镜像，客服看板按它统计）。
+
+```
+GET    /api/v1/user-ai/conversations?tenant_slug=your-school       # 本人会话列表
+GET    /api/v1/user-ai/conversations/{id}?tenant_slug=your-school  # 会话消息（按 sequence 升序）
+DELETE /api/v1/user-ai/conversations/{id}?tenant_slug=your-school  # 删除本人会话
+```
+
+- 会话归属（`tenant_id + user_id`）只由服务端按 Bearer 身份判定，请求体 `user_id` 无效
+- 他人 / 不存在的会话统一 **404**（不区分「无权」与「不存在」，避免探测）
+- 流式续接：Node 调 `/user-ai/stream/resolve` 时传 `conversation_id`，缺省由服务端新建并下发
+- 流结束落库：Node 调内部端点 `POST /user-ai/stream/messages`（服务凭据 + 用户身份）上报
+  assistant 内容、工具结果与 usage；user 消息由 resolve 落库
+- 留存：`php artisan user-ai:prune-conversations`（默认读 `user-ai.conversation.retention_days`，
+  默认 90 天；`0` = 不清理）
+
+## 租户画像（可选）
+
+下游在自身 `ServiceProvider` 绑定 `MultiTenantSaas\Modules\UserAi\Contracts\UserAiProfileResolverContract`
+即可按租户定制人格、UI 文案与工具面。未绑定 / 返回 null 时全部回落 `config('user-ai.*')`；
+`toolSurface` 只能**收窄**白名单（交集），等级与主体仍由服务端判定。
+
 ## 前置条件
 
 1. **知识库已配置**：在「知识库」中接入外部 KB（RAGFlow / Dify / FastGpt / 百炼），并上传校园 FAQ 内容。检索不到内容时接口会返回兜底文案。
@@ -43,7 +68,8 @@ Body: { "tenant_slug": "your-school", "question": "开学时间是什么时候�
 
 这是框架第一条对外 AI 链路，边界比内部 AI 严格得多：
 
-- **工具面白名单**：只有登记在案的工具对外部用户可见；未登记的工具在执行侧直接拒绝
+- **工具面白名单**：只有登记在案的工具对外部用户可见；未登记的工具在执行侧直接拒绝。
+  租户画像只能在此基础上继续收窄（下发面与执行面同源）
 - **禁用写操作**：对外链路只允许只读工具，发券 / 打标签 / 调积分等一律不可达
 - **双向内容守护**：入站拦破坏性指令，出站拦内部标识与敏感信息
 - **全程审计**：每次问答都留痕，含主体等级与访客标识

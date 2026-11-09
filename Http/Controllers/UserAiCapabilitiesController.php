@@ -5,18 +5,45 @@ declare(strict_types=1);
 namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
+use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Http\Controllers\BaseController;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiProfileSource;
 
+/**
+ * C 端 AI 能力面（UI 文案 + 工具运行标签）
+ *
+ * 租户画像（F2）绑定时：title/welcome/quick_questions/disclaimer 优先 profile.ui，
+ * 工具标签优先 profile.toolLabels，工具集合按 profile.toolSurface 收窄（只减不增）。
+ * 未绑定时与改造前逐项一致（BC）。
+ */
 class UserAiCapabilitiesController extends BaseController
 {
+    public function __construct(
+        private readonly UserAiProfileSource $profiles,
+    ) {}
+
     public function __invoke(): JsonResponse
     {
-        $ui = (array) config('user-ai.ui', []);
+        $tenantId = (int) TenantContext::getId();
+        $profile = $this->profiles->forTenant($tenantId);
+
+        $ui = $this->profiles->ui($profile);
         $allowed = (array) config('user-ai.tool_surface.allowed', []);
-        $labels = (array) config('user-ai.tool_surface.labels', []);
+        $labels = $this->profiles->toolLabels($profile);
+
+        // 工具集合：白名单全集，绑定时按 profile 收窄。执行面同源（中间件把同一份
+        // toolSurface 写进执行身份），因此这里不会展示「点了会被 surface_denied」的工具。
+        $visible = $this->profiles->toolSurface($profile) ?? array_keys($allowed);
+
         $tools = [];
 
-        foreach (array_intersect_key($labels, $allowed) as $name => $label) {
+        foreach ($visible as $name) {
+            if (! array_key_exists($name, $allowed)) {
+                continue;
+            }
+
+            $label = $labels[$name] ?? null;
+
             if (! is_array($label)) {
                 continue;
             }

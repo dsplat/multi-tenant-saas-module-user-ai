@@ -8,10 +8,12 @@ use Closure;
 use Illuminate\Http\Request;
 use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
+use MultiTenantSaas\Context\TrustedExecutionInput;
 use MultiTenantSaas\Modules\Infrastructure\Http\Middleware\Concerns\BindsExecutionIdentity;
 use MultiTenantSaas\Modules\Infrastructure\Models\Tenant;
 use MultiTenantSaas\Modules\Infrastructure\Services\ModuleManager;
 use MultiTenantSaas\Modules\UserAi\Services\ExternalTenantAccess;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiProfileSource;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -30,11 +32,17 @@ class EnsureExternalActor
     public function __construct(
         private readonly ModuleManager $moduleManager,
         private readonly ?ExternalTenantAccess $access = null,
+        private readonly ?UserAiProfileSource $profiles = null,
     ) {}
 
     private function accessOrResolve(): ExternalTenantAccess
     {
         return $this->access ?? app(ExternalTenantAccess::class);
+    }
+
+    private function profilesOrResolve(): UserAiProfileSource
+    {
+        return $this->profiles ?? app(UserAiProfileSource::class);
     }
 
     public function handle(Request $request, Closure $next): Response
@@ -95,9 +103,21 @@ class EnsureExternalActor
             );
             ActorContext::clear();
 
+            // ⑤ 租户画像（可选）：工具面只收窄。必须在身份装载之后才生效——
+            //    ActorContext::setToolScope 在未装载时只会暂存（pending），故这里把
+            //    收窄直接写进不可变执行输入（流式 continuation 重建时也不丢）。
+            //    profile 未绑定/未声明 toolSurface 时完全不收窄（BC）。
+            $profiles = $this->profilesOrResolve();
+            $profile = $profiles->forTenant($tenantId);
+            $surface = $profiles->toolSurface($profile);
+
+            if ($surface !== null) {
+                $input = new TrustedExecutionInput(identity: $input->identity->narrowToolScope($surface));
+            }
+
             return $this->runWithIdentity($input, $request, $next);
         } finally {
-            // ⑤ 请求结束即清租户上下文；身份作用域归 runRoot/流式 continuation 销毁
+            // ⑥ 请求结束即清租户上下文；身份作用域归 runRoot/流式 continuation 销毁
             TenantContext::clear();
         }
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace MultiTenantSaas\Modules\UserAi\Services;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Laravel\Sanctum\Events\TokenAuthenticated;
 use Laravel\Sanctum\PersonalAccessToken;
 use MultiTenantSaas\Context\ActorContext;
@@ -52,6 +53,16 @@ class ExternalTenantAccess
         }
 
         $user->withAccessToken($accessToken);
+
+        // 把已认证用户装进默认 guard：C 端用户工具（OrderMyHandler / CouponMyHandler 等）
+        // 以 `auth()->id()` 取主体，而本类刻意绕开 Sanctum guard 自解析 Bearer —— 不补这一步，
+        // 这些工具在 C 端流式/同步执行时恒拿 null，只能返回「未认证的前台用户」。
+        //
+        // 用 `Auth::setUser`（内存态，**不落会话**）而非仅 setUserResolver：默认 guard 是
+        // session 驱动，framework 的 McpMiddleware 已有同样先例。请求边界销毁由容器/
+        // Octane 的每请求清理负责，本类不写 session、也不做登录态留存。
+        Auth::setUser($user);
+        $request->setUserResolver(static fn () => $user);
 
         // 补齐 Guard::__invoke 的两个副作用，避免绕开 guard 后行为漂移：
         // last_used_at 落库，以及 TokenAuthenticated（InfrastructureServiceProvider 的

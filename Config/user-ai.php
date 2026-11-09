@@ -105,6 +105,18 @@ return [
     ],
 
     /*
+    | C 端会话（F4：独立会话表，不复用 conversations）
+    |
+    | history_turns：续接时带入的**轮数**（1 轮 = user + assistant 两条消息）。
+    | retention_days：留存天数（0 = 不清理；`user-ai:prune-conversations` 读取）。
+    |
+    */
+    'conversation' => [
+        'history_turns' => (int) env('USER_AI_CONVERSATION_HISTORY_TURNS', 6),
+        'retention_days' => (int) env('USER_AI_CONVERSATION_RETENTION_DAYS', 90),
+    ],
+
+    /*
     | 限流（公开接口，防刷）
     |
     */

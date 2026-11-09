@@ -15,6 +15,7 @@ use MultiTenantSaas\Modules\Ai\Services\Agent\AuditLogService;
 use MultiTenantSaas\Modules\Ai\Services\Ai\ContentGuardService;
 use MultiTenantSaas\Modules\Contracts\ModuleServiceProvider;
 use MultiTenantSaas\Modules\UserAi\Access\UserAccessContextResolver;
+use MultiTenantSaas\Modules\UserAi\Console\Commands\UserAiPruneConversationsCommand;
 use MultiTenantSaas\Modules\UserAi\Services\OutboundContentGuard;
 use MultiTenantSaas\Modules\UserAi\Services\UserAccessPolicy;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
@@ -69,6 +70,15 @@ class UserAiServiceProvider extends ModuleServiceProvider
                 aiText: $aiText,
             );
         });
+    }
+
+    protected function registerModuleCommands(): void
+    {
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                UserAiPruneConversationsCommand::class,
+            ]);
+        }
     }
 
     protected function bootModule(): void

@@ -6,6 +6,7 @@ namespace MultiTenantSaas\Modules\UserAi\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use MultiTenantSaas\Context\ActorContext;
 use MultiTenantSaas\Context\TenantContext;
 use MultiTenantSaas\Contracts\IdGeneratorContract;
 use MultiTenantSaas\Contracts\ToolRegistryContract;
@@ -14,6 +15,9 @@ use MultiTenantSaas\Http\Controllers\BaseController;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageReservationService;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\AiStreaming\Http\Controllers\ResolveController;
+use MultiTenantSaas\Modules\UserAi\Models\UserAiConversation;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiConversationService;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiProfileSource;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
 
 /**
@@ -25,9 +29,11 @@ use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
  *
  * - 工具面：只下发 `config('user-ai.tool_surface.allowed')` 白名单内的工具
  *   （现状仅 knowledge_search），并按 isEnabledForTenant 过滤未开通模块。
+ *   租户画像（F2）绑定时再按 profile.toolSurface 收窄，**只减不增**。
  *   operator 的营销策划 / 客户管理等工具对 C 端不存在。
- * - 会话：conversation_id 恒 null —— v1 C 端不落 operator 会话表（铁律：不复用
- *   agent_conversations），多轮靠前端回传 messages，Node 自然跳过 messages/report。
+ * - 会话（F4）：`conversation_id` 由服务端续接或新建（独立 user_ai_conversations，
+ *   不复用 operator conversations）；历史事实源以服务端为准，经 payload.history
+ *   交给 reserveStream 裁剪成 context_messages。未传 id 时创建新会话。
  * - 模型：读新增的 `config('user-ai.model.*')`（默认 bailian/qwen），与 operator
  *   secretary 配置解耦，避免耦合运营者账单口径。
  * - 成本：预算前置检查走 {@see AiUsageService}（按 TenantContext 记租户用量），
@@ -44,6 +50,8 @@ class UserAiStreamResolveController extends BaseController
         private readonly AiUsageService $usageService,
         private readonly UserAiRuntime $runtime,
         private readonly IdGeneratorContract $idGenerator,
+        private readonly UserAiConversationService $conversations,
+        private readonly UserAiProfileSource $profiles,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -67,6 +75,25 @@ class UserAiStreamResolveController extends BaseController
             ], 402);
         }
 
+        $data = $request->validate([
+            'conversation_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'source' => ['sometimes', 'nullable', 'string', 'in:' . UserAiConversation::SOURCE_H5 . ',' . UserAiConversation::SOURCE_MINIAPP],
+            'messages' => ['sometimes', 'array', 'max:40'],
+            'messages.*.role' => ['required', 'in:user,assistant'],
+            'messages.*.content' => ['required', 'string', 'max:20000'],
+        ]);
+
+        $messages = $data['messages'] ?? [];
+
+        // 归属只认服务端身份（Bearer 经入口闸装载），不接受请求体 user_id
+        $userId = (int) (ActorContext::getId() ?? 0);
+        if ($userId <= 0) {
+            return response()->json([
+                'success' => false,
+                'message' => '请先登录后使用智能问答',
+            ], 401);
+        }
+
         $providerName = (string) config('user-ai.model.provider', 'bailian');
         $modelName = (string) config('user-ai.model.model', 'qwen3.7-flash');
         $temperature = (float) config('user-ai.model.temperature', 0.3);
@@ -82,11 +109,29 @@ class UserAiStreamResolveController extends BaseController
             ], 422);
         }
 
-        // C 端工具面 = tool_surface 白名单（fail-closed），再按模块开通过滤
+        // 续接/新建会话；他人 / 不存在的 id 在此 404（不区分「无权」与「不存在」）
+        $conversation = $this->conversations->resolve(
+            $tenantId,
+            $userId,
+            $data['conversation_id'] ?? null,
+            (string) ($data['source'] ?? UserAiConversation::SOURCE_H5),
+        );
+
+        // 服务端历史必须在**落本轮 user 消息之前**取，避免把本轮输入重复喂回模型
+        $history = $this->conversations->history($conversation);
+
+        // 租户画像（F2，可选）：只影响人格/UI/工具面，不参与等级与归属判定
+        $profile = $this->profiles->forTenant($tenantId);
+        $surface = $this->profiles->toolSurface($profile);
+
+        // C 端工具面 = tool_surface 白名单（fail-closed），再按模块开通过滤；
+        // profile 只在白名单之内收窄（交集为空 → 一个工具都不下发）。
         $allowed = array_keys((array) config('user-ai.tool_surface.allowed', []));
+        $candidates = $surface ?? $allowed;
+
         $tools = $this->toolRegistry->getToolDefinitions(
             array_values(array_filter(
-                $allowed,
+                $candidates,
                 fn (string $slug) => $this->toolRegistry->isEnabledForTenant($slug, $tenantId),
             )),
         );
@@ -96,28 +141,36 @@ class UserAiStreamResolveController extends BaseController
             'tenant_id' => $tenantId,
             // C 端无 operator Agent 概念，agent_id 置 0 仅为对齐 Node payload shape
             'agent_id' => 0,
-            // v1 不落服务端会话：Node 据 conversation_id=null 跳过 messages/report
-            'conversation_id' => null,
+            // F4：C 端独立会话，由服务端续接/创建
+            'conversation_id' => (int) $conversation->conversation_id,
             'provider' => $providerName,
             'model' => $modelName,
             'base_url' => rtrim((string) $baseUrl, '/'),
-            'system_prompt' => $this->runtime->streamSystemPrompt(),
+            'system_prompt' => $this->runtime->streamSystemPrompt($profile?->persona),
             'temperature' => $temperature,
             'max_tokens' => $maxTokens,
             'max_tool_calls' => (int) config('user-ai.stream.max_tool_calls', 2),
             'tools' => $tools,
         ];
 
-        $messages = $request->validate([
-            'messages' => ['sometimes', 'array', 'max:40'],
-            'messages.*.role' => ['required', 'in:user,assistant'],
-            'messages.*.content' => ['required', 'string', 'max:20000'],
-        ])['messages'] ?? [];
+        // reserveStream 按 payload.history + 本轮最后一条 user 消息裁剪出 context_messages，
+        // Node 以它为唯一上下文（前端上行历史不再直接采信）。
+        if ($history !== []) {
+            $payload['history'] = $history;
+        }
+
         try {
             app(AiUsageReservationService::class)
                 ->reserveStream($payload, $messages, 'user-ai-stream', true);
         } catch (DomainException $exception) {
             return response()->json(['success' => false, 'message' => $exception->getMessage()], $exception->getStatusCode());
+        }
+
+        // 本轮最后一条 user 消息落库（assistant/tool 由 Node 流结束时上报）。
+        // 放在预留成功之后：被配额/上下文门拒绝的请求不留半截会话消息。
+        $lastUser = $this->lastUserMessage($messages);
+        if ($lastUser !== null) {
+            $this->conversations->appendUserMessage($conversation, $lastUser);
         }
 
         // direct 模式：下发 api_key（仅限 Node 与 PHP 同机/内网回环链路）
@@ -129,5 +182,25 @@ class UserAiStreamResolveController extends BaseController
             'success' => true,
             'data' => $payload,
         ]);
+    }
+
+    /**
+     * 本轮最后一条用户消息（无则 null）
+     *
+     * @param  array<int, array{role: string, content: string}>  $messages
+     */
+    private function lastUserMessage(array $messages): ?string
+    {
+        foreach (array_reverse($messages) as $message) {
+            if (($message['role'] ?? null) !== 'user') {
+                continue;
+            }
+
+            $content = trim((string) ($message['content'] ?? ''));
+
+            return $content === '' ? null : $content;
+        }
+
+        return null;
     }
 }

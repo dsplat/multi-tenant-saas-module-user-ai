@@ -19,6 +19,7 @@ use MultiTenantSaas\Modules\Ai\Exceptions\AiUsageAdmissionException;
 use MultiTenantSaas\Modules\Ai\Services\AiUsageService;
 use MultiTenantSaas\Modules\Ai\Services\StreamUsageSettlementService;
 use MultiTenantSaas\Modules\UserAi\Dto\UserAiContext;
+use MultiTenantSaas\Modules\UserAi\Services\UserAiProfileSource;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiRuntime;
 use MultiTenantSaas\Modules\UserAi\Services\UserAiSourcePresenter;
 
@@ -45,16 +46,20 @@ class UserAiController extends BaseController
 
     private readonly UserAiSourcePresenter $sourcePresenter;
 
+    private readonly UserAiProfileSource $profiles;
+
     public function __construct(
         private readonly UserAiRuntime $runtime,
         private readonly AiUsageService $usageService,
         private readonly UsageSettlementContract $settlement,
         ?StreamUsageSettlementService $streamSettlement = null,
         ?UserAiSourcePresenter $sourcePresenter = null,
+        ?UserAiProfileSource $profiles = null,
     ) {
         $this->streamSettlement = $streamSettlement
             ?? new StreamUsageSettlementService($this->usageService, $this->settlement);
         $this->sourcePresenter = $sourcePresenter ?? new UserAiSourcePresenter;
+        $this->profiles = $profiles ?? new UserAiProfileSource;
     }
 
     /**
@@ -96,12 +101,20 @@ class UserAiController extends BaseController
         $actorLevel = ActorContext::getLevel();
         $capturedIdentity = $this->identityManager()->current();
 
+        // 租户画像（F2，可选）：人格只影响提示词前缀，不替换固定安全约束；
+        // 未绑定时为 null，UserAiContext 与改造前逐字一致（BC）。
+        $profile = $this->profiles->forTenant($tenantId);
+
         try {
             $result = $this->runtime->ask(
                 $validated['question'],
                 $tenantId,
                 $validated['visitor_key'] ?? null,
-                context: new UserAiContext(accessLevel: $actorLevel, actorId: $actorId),
+                context: new UserAiContext(
+                    accessLevel: $actorLevel,
+                    actorId: $actorId,
+                    persona: $profile?->persona,
+                ),
             );
         } catch (AiUsageAdmissionException $exception) {
             return response()->json(['success' => false, 'message' => $exception->getMessage()], 402);
@@ -184,7 +197,7 @@ class UserAiController extends BaseController
                 $manager->runRoot($input, $work);
             }
         } catch (\Throwable $e) {
-            Log::warning('[user-ai] ask usage settlement failed: '.$e->getMessage(), [
+            Log::warning('[user-ai] ask usage settlement failed: ' . $e->getMessage(), [
                 'tenant_id' => $tenantId,
                 'actor_id' => $actorId,
                 'input_tokens' => $inputTokens,
